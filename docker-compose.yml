@@ -1,0 +1,49 @@
+services:
+  mail-ticket-tool:
+    build: .
+    image: mail-ticket-tool:latest
+    container_name: mail-ticket-tool
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # For local/Docker testing without Neon: point at the local `postgres`
+      # service below instead. Override DATABASE_URL/DATABASE_SSL in your
+      # .env if you'd rather use a real Neon connection string even for
+      # local testing (then you can comment out/remove the `postgres`
+      # service and `depends_on` below).
+      DATABASE_URL: ${DATABASE_URL:-postgres://mailtickets:mailtickets@postgres:5432/mailtickets}
+      DATABASE_SSL: ${DATABASE_SSL:-false}
+      ENABLE_INTERNAL_POLLER: ${ENABLE_INTERNAL_POLLER:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Local Postgres for testing without Neon. Not used in production - point
+  # DATABASE_URL at your Neon connection string for that instead (and you
+  # can remove this service + the depends_on above).
+  postgres:
+    image: postgres:16-alpine
+    container_name: mail-ticket-tool-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mailtickets
+      POSTGRES_PASSWORD: mailtickets
+      POSTGRES_DB: mailtickets
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailtickets"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

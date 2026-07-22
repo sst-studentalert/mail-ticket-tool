@@ -1,0 +1,172 @@
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --border: #e1e4e8;
+  --text: #1f2328;
+  --muted: #6a737d;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --danger: #dc2626;
+  --success: #16a34a;
+  --warn: #d97706;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app { min-height: 100vh; display: flex; flex-direction: column; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  height: 56px;
+}
+
+.topbar .brand { font-weight: 700; font-size: 16px; }
+
+.topbar nav { display: flex; gap: 4px; }
+
+.topbar nav a {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.topbar nav a.active, .topbar nav a:hover { background: #eef2ff; color: var(--primary); }
+
+.topbar .user { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+
+main { flex: 1; padding: 20px; max-width: 1200px; width: 100%; margin: 0 auto; }
+
+.login-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+}
+
+.login-card { width: 340px; }
+.login-card h1 { font-size: 18px; margin-top: 0; }
+
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; margin-top: 12px; }
+
+input, select, textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+textarea { resize: vertical; }
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  background: var(--primary);
+  color: white;
+  font-weight: 600;
+}
+button:hover { background: var(--primary-dark); }
+button.secondary { background: #eef0f2; color: var(--text); }
+button.secondary:hover { background: #e2e5e9; }
+button.danger { background: var(--danger); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.error-banner {
+  background: #fee2e2; color: #991b1b; padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 14px;
+}
+.info-banner {
+  background: #dcfce7; color: #166534; padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 14px;
+}
+
+.filters {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; background: var(--panel);
+  padding: 12px; border-radius: var(--radius); border: 1px solid var(--border);
+}
+.filters > div { min-width: 140px; }
+.filters label { margin-top: 0; }
+
+table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: var(--radius); overflow: hidden; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+th { background: #fafbfc; color: var(--muted); font-weight: 600; }
+tr.ticket-row { cursor: pointer; }
+tr.ticket-row:hover { background: #f8fafc; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.badge.unassigned { background: #f3f4f6; color: #4b5563; }
+.badge.assigned { background: #dbeafe; color: #1e40af; }
+.badge.replied { background: #dcfce7; color: #166534; }
+.badge.closed { background: #f3e8ff; color: #6b21a8; }
+.badge.automated { background: #fef3c7; color: #92400e; margin-left: 6px; }
+
+.tag-chip { display: inline-block; background: #eef2ff; color: #3730a3; padding: 1px 8px; border-radius: 999px; font-size: 11px; margin-right: 4px; }
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; align-items: flex-start; justify-content: center;
+  padding: 40px 16px; overflow-y: auto; z-index: 50;
+}
+.modal { background: var(--panel); border-radius: var(--radius); width: 700px; max-width: 100%; padding: 24px; overflow-wrap: anywhere; }
+.modal h2 { margin-top: 0; font-size: 18px; }
+.modal .close-x { float: right; background: none; color: var(--muted); padding: 4px 8px; }
+.modal .close-x:hover { background: #f3f4f6; }
+
+/* min-width: 0 on the grid children is required so a long unbroken string
+   (e.g. a tracking URL with no spaces) in .body-box can't force its grid
+   column - and the whole modal layout - wider than the modal itself.
+   Without it, CSS Grid's default min-width:auto lets overflowing content
+   push the second column (Status/Assignee/Tags/etc.) out past the modal's
+   right edge. */
+.detail-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 12px; }
+.detail-grid > div { min-width: 0; }
+.body-box {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  background: #fafbfc; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 13px; max-height: 300px; overflow-y: auto;
+}
+.side-field { margin-bottom: 14px; }
+.side-field label { margin-top: 0; }
+
+.reply-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.stat-card h3 { margin: 0 0 8px 0; font-size: 15px; }
+
+.charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-bottom: 16px; }
+.chart-card h3 { margin: 0 0 10px 0; font-size: 15px; }
+.chart-card { min-height: 260px; }
+.stat-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; color: var(--muted); }
+.stat-row strong { color: var(--text); }
+
+.mailbox-list, .roster-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.list-item { display: flex; justify-content: space-between; align-items: center; background: var(--panel); border: 1px solid var(--border); padding: 10px 14px; border-radius: 6px; }
+.list-item .meta { font-size: 12px; color: var(--muted); }
+
+.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+
+.pill-status { text-transform: capitalize; }
+
+.small { font-size: 12px; color: var(--muted); }
