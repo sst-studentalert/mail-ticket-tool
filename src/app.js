@@ -30,7 +30,17 @@ let appPromise = null;
 // which matters on Vercel where a warm serverless instance handles multiple
 // requests and shouldn't redo migrations/session-store setup on every one.
 function getApp() {
-  if (!appPromise) appPromise = buildApp();
+  if (!appPromise) {
+    // If buildApp() rejects (bad DATABASE_URL, migration failure, etc.),
+    // don't leave a permanently-rejected promise cached - that would make
+    // every future request on this warm instance fail immediately with no
+    // chance to recover until a cold start. Clear it so the next request
+    // retries from scratch.
+    appPromise = buildApp().catch((err) => {
+      appPromise = null;
+      throw err;
+    });
+  }
   return appPromise;
 }
 
