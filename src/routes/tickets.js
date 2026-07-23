@@ -179,10 +179,14 @@ router.patch('/:id/assign', requireAdmin, async (req, res, next) => {
 
     // assigned_at is a TAT milestone: only ever set on the *first* assignment,
     // so reassigning a ticket later doesn't reset "time to first response".
+    // The bare `? IS NOT NULL` check below needs an explicit ::int cast -
+    // Postgres can't infer a type for a standalone parameter used only in an
+    // IS NOT NULL check (error 42P18 "could not determine data type of
+    // parameter"), unlike SQLite which never cared about param types.
     await db
       .prepare(
         `UPDATE tickets
-         SET assignee_id = ?, status = ?, assigned_at = COALESCE(assigned_at, CASE WHEN ? IS NOT NULL THEN datetime('now') END), updated_at = datetime('now')
+         SET assignee_id = ?, status = ?, assigned_at = COALESCE(assigned_at, CASE WHEN ?::int IS NOT NULL THEN datetime('now') END), updated_at = datetime('now')
          WHERE id = ?`
       )
       .run(assignee_id || null, newStatus, assignee_id || null, ticket.id);
