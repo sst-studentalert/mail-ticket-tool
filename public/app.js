@@ -602,7 +602,10 @@ function renderTatCharts(data) {
     return;
   }
 
-  const hours = (seconds) => (seconds == null ? null : Math.round((seconds / 3600) * 10) / 10);
+  // Rounding to 1 decimal place made anything under ~3 minutes collapse to
+  // 0.0 (invisible bar) - 3 decimals keeps small/test-data TATs visible
+  // while still reading cleanly for real multi-hour TATs.
+  const hours = (seconds) => (seconds == null ? null : Math.round((seconds / 3600) * 1000) / 1000);
 
   // --- Chart 1: TAT by person (grouped bar, first response vs resolution) ---
   const peopleLabels = data.per_assignee.map((p) => p.member.name);
