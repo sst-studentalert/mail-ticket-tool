@@ -585,7 +585,22 @@ let tatByPersonChart = null;
 let tatTrendChart = null;
 
 function renderTatCharts(data) {
-  if (typeof Chart === 'undefined') return; // CDN blocked/offline - dashboard still works without charts
+  if (typeof Chart === 'undefined') {
+    // CDN script (loaded in index.html) didn't load - surface this visibly
+    // instead of leaving two blank boxes with no explanation, so it's
+    // obvious to whoever's looking whether this is a real bug or just a
+    // blocked/offline CDN.
+    ['chart-tat-by-person', 'chart-tat-trend'].forEach((id) => {
+      const canvas = document.getElementById(id);
+      if (canvas) {
+        canvas.replaceWith(Object.assign(document.createElement('p'), {
+          className: 'small',
+          textContent: 'Charts unavailable - the Chart.js library failed to load (check your network/CDN access).',
+        }));
+      }
+    });
+    return;
+  }
 
   const hours = (seconds) => (seconds == null ? null : Math.round((seconds / 3600) * 10) / 10);
 
