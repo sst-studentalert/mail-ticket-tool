@@ -812,6 +812,16 @@ async function renderMailboxes() {
     <p class="small">Each mailbox owner should click "Connect new mailbox" themselves and sign in with their own Google account — no password sharing required.</p>
   `);
 
+  await renderMailboxList();
+}
+
+// Re-renders just the #mailbox-list element (not the whole page section) -
+// used both for the initial load above and after disconnecting a mailbox.
+// Calling renderMailboxes() again instead of this would re-append a whole
+// second "Connected mailboxes" header/list into #main on top of the
+// existing one (since it uses insertAdjacentHTML('beforeend', ...) rather
+// than replacing #main's contents), duplicating the section on screen.
+async function renderMailboxList() {
   const { mailboxes } = await api('/mailboxes');
   state.mailboxes = mailboxes;
   el('mailbox-list').innerHTML = mailboxes.map((m) => `
@@ -828,7 +838,7 @@ async function renderMailboxes() {
     btn.addEventListener('click', async () => {
       if (!confirm('Disconnect this mailbox? It will stop being polled until reconnected.')) return;
       await api(`/mailboxes/${btn.dataset.disconnect}`, { method: 'DELETE' });
-      renderMailboxes();
+      renderMailboxList();
     });
   });
 }
