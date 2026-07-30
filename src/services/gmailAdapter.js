@@ -190,8 +190,15 @@ async function listNewMessages(mailboxRow) {
     q += ` after:${y}/${m}/${d}`;
   }
 
+  // TEMPORARY DEBUG LOGGING - remove once the missing-message issue is
+  // diagnosed. Prints the exact Gmail search query and raw/filtered counts
+  // so we can tell whether Gmail's API isn't returning a candidate message
+  // at all, vs. it being fetched and then discarded by our date filter.
+  console.log(`[gmailAdapter] listNewMessages(${mailboxRow.email}): q="${q}" last_internal_date=${mailboxRow.last_internal_date}`);
+
   const results = [];
   let pageToken;
+  let rawCount = 0;
   do {
     const { data } = await gmail.users.messages.list({
       userId: 'me',
@@ -200,10 +207,14 @@ async function listNewMessages(mailboxRow) {
       pageToken,
     });
     if (data.messages) {
+      rawCount += data.messages.length;
       for (const m of data.messages) {
         const full = await getMessage(mailboxRow, m.id);
         const internalDateMs = parseInt(full.internalDate || '0', 10);
         const lastSeenMs = parseInt(mailboxRow.last_internal_date || '0', 10);
+        console.log(
+          `[gmailAdapter]   candidate ${m.id} subject="${full.subject}" internalDate=${internalDateMs} (${new Date(internalDateMs).toISOString()}) lastSeenMs=${lastSeenMs} -> ${internalDateMs > lastSeenMs ? 'INCLUDED' : 'excluded (not newer than checkpoint)'}`
+        );
         if (internalDateMs > lastSeenMs) {
           results.push(full);
         }
@@ -212,6 +223,8 @@ async function listNewMessages(mailboxRow) {
     pageToken = data.nextPageToken;
     // Safety cap: don't loop forever on a mailbox with huge backlog on first sync.
   } while (pageToken && results.length < 200);
+
+  console.log(`[gmailAdapter] listNewMessages(${mailboxRow.email}): Gmail returned ${rawCount} raw candidate(s), ${results.length} passed the checkpoint filter`);
 
   // Oldest first, so tickets are created in chronological order.
   results.sort((a, b) => parseInt(a.internalDate, 10) - parseInt(b.internalDate, 10));
@@ -234,8 +247,13 @@ async function listSentMessages(mailboxRow) {
     q += ` after:${y}/${m}/${d}`;
   }
 
+  // TEMPORARY DEBUG LOGGING - remove once the missing-message issue is
+  // diagnosed (see the matching block in listNewMessages above).
+  console.log(`[gmailAdapter] listSentMessages(${mailboxRow.email}): q="${q}" last_sent_internal_date=${mailboxRow.last_sent_internal_date}`);
+
   const results = [];
   let pageToken;
+  let rawCount = 0;
   do {
     const { data } = await gmail.users.messages.list({
       userId: 'me',
@@ -244,10 +262,14 @@ async function listSentMessages(mailboxRow) {
       pageToken,
     });
     if (data.messages) {
+      rawCount += data.messages.length;
       for (const m of data.messages) {
         const full = await getMessage(mailboxRow, m.id);
         const internalDateMs = parseInt(full.internalDate || '0', 10);
         const lastSeenMs = parseInt(mailboxRow.last_sent_internal_date || '0', 10);
+        console.log(
+          `[gmailAdapter]   sent candidate ${m.id} subject="${full.subject}" internalDate=${internalDateMs} (${new Date(internalDateMs).toISOString()}) lastSeenMs=${lastSeenMs} -> ${internalDateMs > lastSeenMs ? 'INCLUDED' : 'excluded (not newer than checkpoint)'}`
+        );
         if (internalDateMs > lastSeenMs) {
           results.push(full);
         }
@@ -255,6 +277,8 @@ async function listSentMessages(mailboxRow) {
     }
     pageToken = data.nextPageToken;
   } while (pageToken && results.length < 200);
+
+  console.log(`[gmailAdapter] listSentMessages(${mailboxRow.email}): Gmail returned ${rawCount} raw candidate(s), ${results.length} passed the checkpoint filter`);
 
   results.sort((a, b) => parseInt(a.internalDate, 10) - parseInt(b.internalDate, 10));
   return results;
