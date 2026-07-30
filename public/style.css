@@ -147,6 +147,18 @@ tr.ticket-row:hover { background: #f8fafc; }
   overflow-wrap: anywhere;
   background: #fafbfc; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 13px; max-height: 300px; overflow-y: auto;
 }
+.thread { max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+.thread-message {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-width: 92%;
+}
+.thread-message.inbound { background: #fafbfc; align-self: flex-start; }
+.thread-message.outbound { background: #eef4ff; align-self: flex-end; border-color: #cbd9f5; }
+.thread-message-meta { margin-bottom: 4px; color: var(--muted); }
+.thread-message-body { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-size: 13px; }
+
 .side-field { margin-bottom: 14px; }
 .side-field label { margin-top: 0; }
 

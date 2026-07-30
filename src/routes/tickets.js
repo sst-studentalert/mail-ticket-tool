@@ -5,6 +5,7 @@ const requireAdmin = require('../middleware/requireAdmin');
 const gmailAdapter = require('../services/gmailAdapter');
 const { computeTicketTat } = require('../services/tat');
 const { getAccessibleMailboxIds, mailboxAllowed } = require('../services/mailboxAccess');
+const { recordMessage } = require('../services/poller');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -172,10 +173,19 @@ router.get('/:id', async (req, res, next) => {
       )
       .all(ticket.id);
 
+    // Full conversation thread, oldest first - see the ticket_messages
+    // table comment in db.js. Tickets created before this feature shipped
+    // won't have any rows here (only tickets.body, which is still kept as a
+    // fallback - see the frontend's ticket detail rendering).
+    const messages = await db
+      .prepare(`SELECT * FROM ticket_messages WHERE ticket_id = ? ORDER BY sent_at`)
+      .all(ticket.id);
+
     res.json({
       ticket: serializeTicket(ticket),
       mailbox_email: mailbox ? mailbox.email : null,
       events,
+      messages,
     });
   } catch (err) {
     next(err);
@@ -357,7 +367,7 @@ router.post('/:id/reply', async (req, res, next) => {
     const to = toMatch ? toMatch[1] : ticket.from_address;
 
     try {
-      await adapter.sendReply(mailbox, {
+      const sent = await adapter.sendReply(mailbox, {
         threadId: ticket.gmail_thread_id,
         messageIdHeader: ticket.message_id_header,
         to,
@@ -371,6 +381,14 @@ router.post('/:id/reply', async (req, res, next) => {
         )
         .run(ticket.id);
       await logEvent(ticket.id, req.user.id, 'reply_sent', `Sent via ${mailbox.email}`);
+
+      await recordMessage(ticket.id, {
+        gmailMessageId: sent && sent.id,
+        direction: 'outbound',
+        fromAddress: mailbox.email,
+        body,
+        sentAt: new Date().toISOString(),
+      });
 
       const updated = await db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticket.id);
       res.json({ ticket: serializeTicket(updated) });

@@ -39,6 +39,22 @@ async function logEvent(ticketId, eventType, detail) {
     .run(ticketId, eventType, detail || null);
 }
 
+// Records one message (inbound or outbound) against a ticket's thread - see
+// the ticket_messages table comment in db.js for why this replaced
+// overwriting a single tickets.body field. Idempotent on gmail_message_id
+// (via the partial unique index), so re-polling the same Gmail message
+// twice - which already happens naturally on every poll cycle - can't
+// create duplicate rows.
+async function recordMessage(ticketId, { gmailMessageId, direction, fromAddress, body, sentAt }) {
+  await db
+    .prepare(
+      `INSERT INTO ticket_messages (ticket_id, gmail_message_id, direction, from_address, body, sent_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (gmail_message_id) WHERE gmail_message_id IS NOT NULL DO NOTHING`
+    )
+    .run(ticketId, gmailMessageId || null, direction, fromAddress || null, body || null, sentAt);
+}
+
 // Returns { ticketId, created } - created=true if a new ticket row was
 // inserted, false if an existing thread's ticket was updated in place.
 async function createTicketFromMessage(mailbox, message) {
@@ -99,6 +115,14 @@ async function createTicketFromMessage(mailbox, message) {
       `New message in thread (${message.providerMessageId})`
     );
 
+    await recordMessage(existingThreadTicket.id, {
+      gmailMessageId: message.providerMessageId,
+      direction: 'inbound',
+      fromAddress: message.from,
+      body: message.bodyText,
+      sentAt: message.receivedAt,
+    });
+
     return { ticketId: existingThreadTicket.id, created: false };
   }
 
@@ -126,6 +150,14 @@ async function createTicketFromMessage(mailbox, message) {
       reasons.length ? reasons.join('; ') : null
     );
 
+  await recordMessage(info.lastInsertRowid, {
+    gmailMessageId: message.providerMessageId,
+    direction: 'inbound',
+    fromAddress: message.from,
+    body: message.bodyText,
+    sentAt: message.receivedAt,
+  });
+
   return { ticketId: info.lastInsertRowid, created: true };
 }
 
@@ -145,6 +177,26 @@ async function detectExternalReply(mailbox, sentMessage) {
     .get(mailbox.id, sentMessage.providerThreadId);
   if (!ticket) return false;
 
+  // Guard against misattributing an OUTBOUND message that's actually OLDER
+  // than the ticket itself (e.g. the original message that started this
+  // thread, sent before anyone had replied and before a ticket even existed
+  // for it - see the module comment at the top of this file) as "the
+  // reply". Without this check, first_replied_at could end up earlier than
+  // first_received_at, producing a negative TAT that silently corrupts the
+  // team-wide average on the Dashboard. Only Sent messages that actually
+  // happened after the ticket's own first inbound message count as a real
+  // reply.
+  const sentAt = new Date(sentMessage.receivedAt || parseInt(sentMessage.internalDate || '0', 10));
+  const firstReceivedAt =
+    ticket.first_received_at instanceof Date ? ticket.first_received_at : new Date(ticket.first_received_at);
+  if (
+    !Number.isNaN(sentAt.getTime()) &&
+    !Number.isNaN(firstReceivedAt.getTime()) &&
+    sentAt.getTime() <= firstReceivedAt.getTime()
+  ) {
+    return false;
+  }
+
   await db
     .prepare(
       `UPDATE tickets
@@ -161,6 +213,14 @@ async function detectExternalReply(mailbox, sentMessage) {
       'reply_detected_external',
       `Detected an outgoing reply in Sent (${sentMessage.providerMessageId}), not sent via this tool`
     );
+
+  await recordMessage(ticket.id, {
+    gmailMessageId: sentMessage.providerMessageId,
+    direction: 'outbound',
+    fromAddress: sentMessage.from,
+    body: sentMessage.bodyText,
+    sentAt: sentMessage.receivedAt,
+  });
 
   return true;
 }
@@ -246,4 +306,11 @@ function startPoller() {
   }, 5000);
 }
 
-module.exports = { startPoller, pollAllMailboxes, pollMailbox, createTicketFromMessage, detectExternalReply };
+module.exports = {
+  startPoller,
+  pollAllMailboxes,
+  pollMailbox,
+  createTicketFromMessage,
+  detectExternalReply,
+  recordMessage,
+};

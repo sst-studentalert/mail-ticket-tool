@@ -340,8 +340,45 @@ function rowHtml(t) {
 
 // ---------- Ticket detail modal ----------
 
+// Strips common markdown/quote artifacts that some senders' systems leave
+// in the plain-text part of an email (literal "**bold**" markers never
+// converted to real bold, and "> " blockquote prefixes) - purely cosmetic
+// cleanup for display, doesn't touch the stored data.
+function cleanBodyForDisplay(text) {
+  if (!text) return text;
+  return text
+    .split('\n')
+    .map((line) => line.replace(/^(\s*>\s?)+/, ''))
+    .join('\n')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '$1');
+}
+
+// Renders the full per-message conversation thread (see the ticket_messages
+// table comment in db.js) as a chat-style list, oldest first. Falls back to
+// the old single raw-body display for tickets created before this feature
+// shipped (no rows in ticket_messages yet).
+function renderThread(messages, ticket) {
+  if (!messages || messages.length === 0) {
+    return `<div class="body-box">${escapeHtml(cleanBodyForDisplay(ticket.body || ticket.snippet) || '(no body)')}</div>`;
+  }
+  return `
+    <div class="thread">
+      ${messages.map((m) => `
+        <div class="thread-message ${m.direction === 'outbound' ? 'outbound' : 'inbound'}">
+          <div class="thread-message-meta small">
+            <strong>${escapeHtml(m.from_address || (m.direction === 'outbound' ? 'us' : 'them'))}</strong>
+            &middot; ${fmtDate(m.sent_at)}
+          </div>
+          <div class="thread-message-body">${escapeHtml(cleanBodyForDisplay(m.body) || '(no body)')}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
 async function openTicket(id) {
-  const { ticket, mailbox_email, events } = await api(`/tickets/${id}`);
+  const { ticket, mailbox_email, events, messages } = await api(`/tickets/${id}`);
   state.openTicketId = id;
 
   const backdrop = document.createElement('div');
@@ -357,8 +394,8 @@ async function openTicket(id) {
 
       <div class="detail-grid">
         <div>
-          <label>Body</label>
-          <div class="body-box">${escapeHtml(ticket.body || ticket.snippet || '(no body)')}</div>
+          <label>${messages && messages.length ? 'Conversation' : 'Body'}</label>
+          ${renderThread(messages, ticket)}
 
           <label>Reply</label>
           <textarea id="reply-body" rows="6" placeholder="Type your reply..."></textarea>

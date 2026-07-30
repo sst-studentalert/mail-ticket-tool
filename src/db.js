@@ -175,6 +175,32 @@ async function migrate() {
     CREATE INDEX IF NOT EXISTS idx_mailbox_access_member ON mailbox_access(team_member_id);
     CREATE INDEX IF NOT EXISTS idx_mailbox_access_mailbox ON mailbox_access(mailbox_id);
 
+    -- One row per individual message in a ticket's thread (inbound from the
+    -- recipient, or outbound - either sent through this tool or detected in
+    -- the mailbox's Sent folder). Replaces the old approach of overwriting
+    -- tickets.body with just the latest message's raw text every time a new
+    -- message arrived, which (a) lost every earlier message's content and
+    -- (b) displayed increasingly deep nested quote-blocks from email
+    -- clients' own reply-quoting, both confusing from a UI standpoint. The
+    -- ticket detail view renders these in order as a conversation thread.
+    -- gmail_message_id is nullable (NULL for replies sent through this tool
+    -- before Gmail assigns them an id in the response - filled in once
+    -- known) but UNIQUE when present, so re-polling the same Gmail message
+    -- twice can't create a duplicate row.
+    CREATE TABLE IF NOT EXISTS ticket_messages (
+      id SERIAL PRIMARY KEY,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      gmail_message_id TEXT,
+      direction TEXT NOT NULL, -- 'inbound' | 'outbound'
+      from_address TEXT,
+      body TEXT,
+      sent_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_messages_gmail_id ON ticket_messages(gmail_message_id)
+      WHERE gmail_message_id IS NOT NULL;
+
     -- Belt-and-suspenders for columns added after the tables above already
     -- existed in an earlier version of this schema (harmless no-ops on a
     -- brand new database).
