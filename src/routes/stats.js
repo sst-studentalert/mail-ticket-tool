@@ -22,6 +22,7 @@ const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 const requireAdmin = require('../middleware/requireAdmin');
 const { fmtDuration } = require('../services/tat');
+const { getAccessibleMailboxIds } = require('../services/mailboxAccess');
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -60,13 +61,30 @@ router.get('/', async (req, res, next) => {
     }
     const dateSql = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : '';
 
+    // Mailbox access allow-list - a separate, additional restriction from
+    // is_admin (see services/mailboxAccess.js). Admins are still scoped to
+    // their granted mailboxes here, same as in the Tickets list, so the
+    // Dashboard never shows numbers from a mailbox they can't see tickets
+    // from. null (the default, unrestricted) means no extra clause.
+    const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
+    let mailboxSql = '';
+    let mailboxParams = [];
+    if (accessibleMailboxIds !== null) {
+      if (accessibleMailboxIds.length === 0) {
+        mailboxSql = 'AND 1 = 0';
+      } else {
+        mailboxSql = 'AND mailbox_id = ANY(?)';
+        mailboxParams = [accessibleMailboxIds];
+      }
+    }
+
     // Computes { avg_seconds, avg_human, sample_size } for a TAT metric over
     // a given WHERE clause (params must match placeholders in extraWhere),
     // always baselined against first_received_at (stable across reopens)
-    // and always scoped to the current date range. Two TIMESTAMPTZ values
-    // subtracted give an INTERVAL in Postgres; EXTRACT(EPOCH FROM ...)
-    // turns that into seconds (SQLite's equivalent was
-    // (julianday(a) - julianday(b)) * 86400).
+    // and always scoped to the current date range + mailbox access. Two
+    // TIMESTAMPTZ values subtracted give an INTERVAL in Postgres;
+    // EXTRACT(EPOCH FROM ...) turns that into seconds (SQLite's equivalent
+    // was (julianday(a) - julianday(b)) * 86400).
     async function tatFor(milestoneExpr, extraWhere, extraParams) {
       const row = await db
         .prepare(
@@ -74,9 +92,9 @@ router.get('/', async (req, res, next) => {
                   COUNT(*) AS n
            FROM tickets
            WHERE is_automated = 0 AND ${milestoneExpr} IS NOT NULL AND first_received_at IS NOT NULL
-             ${dateSql} ${extraWhere}`
+             ${dateSql} ${mailboxSql} ${extraWhere}`
         )
-        .get(...dateParams, ...extraParams);
+        .get(...dateParams, ...mailboxParams, ...extraParams);
       const avgSeconds = row.avg_seconds == null ? null : Number(row.avg_seconds);
       return {
         avg_seconds: avgSeconds,
@@ -87,8 +105,8 @@ router.get('/', async (req, res, next) => {
 
     async function countFor(extraWhere, extraParams) {
       const row = await db
-        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 0 ${dateSql} ${extraWhere}`)
-        .get(...dateParams, ...extraParams);
+        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 0 ${dateSql} ${mailboxSql} ${extraWhere}`)
+        .get(...dateParams, ...mailboxParams, ...extraParams);
       return row.c;
     }
 
@@ -115,21 +133,35 @@ router.get('/', async (req, res, next) => {
     unassignedCounts.total = STATUSES.reduce((sum, s) => sum + unassignedCounts[s], 0);
 
     const automatedExcludedTotal = (
-      await db.prepare(`SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 1 ${dateSql}`).get(...dateParams)
+      await db
+        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 1 ${dateSql} ${mailboxSql}`)
+        .get(...dateParams, ...mailboxParams)
     ).c;
 
     const totalTickets = (
-      await db.prepare(`SELECT COUNT(*) AS c FROM tickets WHERE 1=1 ${dateSql}`).get(...dateParams)
+      await db
+        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE 1=1 ${dateSql} ${mailboxSql}`)
+        .get(...dateParams, ...mailboxParams)
     ).c;
 
+    // Mailbox list itself is also scoped - an admin restricted to certain
+    // mailboxes shouldn't even see other mailboxes' rows (with a count of
+    // 0) in this table, since that still reveals which mailboxes exist.
+    const mailboxListSql = accessibleMailboxIds === null
+      ? ''
+      : accessibleMailboxIds.length === 0
+        ? 'WHERE 1 = 0'
+        : 'WHERE m.id = ANY(?)';
+    const mailboxListParams = accessibleMailboxIds && accessibleMailboxIds.length ? [accessibleMailboxIds] : [];
     const perMailbox = await db
       .prepare(
         `SELECT m.email,
                 (SELECT COUNT(*) FROM tickets t WHERE t.mailbox_id = m.id AND t.is_automated = 0 ${dateSql}) AS c
          FROM mailboxes m
+         ${mailboxListSql}
          ORDER BY m.email`
       )
-      .all(...dateParams);
+      .all(...dateParams, ...mailboxListParams);
 
     const overallTat = {
       first_response: await tatFor(FIRST_RESPONSE_EXPR, '', []),
@@ -155,10 +187,11 @@ router.get('/', async (req, res, next) => {
            AND first_received_at IS NOT NULL
            AND first_received_at::date >= (${trendFrom ? '?::date' : "(CURRENT_DATE - INTERVAL '30 days')"})
            ${to_date ? 'AND first_received_at::date <= ?::date' : ''}
+           ${mailboxSql}
          GROUP BY first_received_at::date
          ORDER BY first_received_at::date`
       )
-      .all(...(trendFrom ? [trendFrom] : []), ...(to_date ? [to_date] : []));
+      .all(...(trendFrom ? [trendFrom] : []), ...(to_date ? [to_date] : []), ...mailboxParams);
 
     const tatTrend = trendRows.map((r) => ({
       day: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : r.day,

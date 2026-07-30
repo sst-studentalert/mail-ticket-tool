@@ -159,6 +159,22 @@ async function migrate() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    -- Per-person mailbox access allow-list. A team member with ZERO rows
+    -- here is unrestricted (sees every mailbox) - this keeps every
+    -- pre-existing team member's access unchanged until an admin explicitly
+    -- grants specific mailboxes to someone, at which point their visibility
+    -- narrows to just those. Applies to admins and agents alike; it's a
+    -- separate concern from the is_admin flag (which still gates
+    -- roster/mailbox management and the team-wide Dashboard regardless of
+    -- mailbox grants).
+    CREATE TABLE IF NOT EXISTS mailbox_access (
+      team_member_id INTEGER NOT NULL REFERENCES team_members(id) ON DELETE CASCADE,
+      mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+      PRIMARY KEY (team_member_id, mailbox_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mailbox_access_member ON mailbox_access(team_member_id);
+    CREATE INDEX IF NOT EXISTS idx_mailbox_access_mailbox ON mailbox_access(mailbox_id);
+
     -- Belt-and-suspenders for columns added after the tables above already
     -- existed in an earlier version of this schema (harmless no-ops on a
     -- brand new database).

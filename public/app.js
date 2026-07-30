@@ -855,7 +855,7 @@ function renderRosterList() {
     <div class="list-item">
       <div>
         <div>${escapeHtml(m.name)} ${m.is_admin ? '<span class="small">(admin)</span>' : ''}</div>
-        <div class="meta">${escapeHtml(m.email)}</div>
+        <div class="meta">${escapeHtml(m.email)}${m.mailbox_ids && m.mailbox_ids.length ? ` &middot; restricted to ${m.mailbox_ids.length} mailbox${m.mailbox_ids.length === 1 ? '' : 'es'}` : ''}</div>
       </div>
       <div style="display:flex; gap:8px;">
         <button class="secondary" data-edit="${m.id}">Edit</button>
@@ -905,6 +905,20 @@ function openEditMember(id) {
             Admin (full access)
           </label>
         </div>
+        <hr style="margin:14px 0; border:none; border-top:1px solid #e5e7eb;" />
+        <label style="display:inline-flex; align-items:center; gap:6px; margin:0;">
+          <input type="checkbox" id="edit-restrict-mailboxes" style="width:auto;" ${member.mailbox_ids.length ? 'checked' : ''} />
+          Restrict to specific mailboxes
+        </label>
+        <p class="small" style="margin-top:4px;">Off = sees every mailbox (default). Applies to admins and agents alike - even an admin only sees tickets from the mailboxes checked below once this is turned on.</p>
+        <div id="mailbox-access-list" style="display:${member.mailbox_ids.length ? 'block' : 'none'}; margin-top:8px;">
+          ${state.mailboxes.map((m) => `
+            <label style="display:flex; align-items:center; gap:6px; margin:4px 0;">
+              <input type="checkbox" class="mailbox-access-checkbox" value="${m.id}" style="width:auto;" ${member.mailbox_ids.includes(m.id) ? 'checked' : ''} />
+              ${escapeHtml(m.email)}
+            </label>
+          `).join('') || '<p class="small">No mailboxes connected yet.</p>'}
+        </div>
         ` : ''}
         <div style="margin-top:14px;">
           <button type="submit">Save changes</button>
@@ -916,6 +930,12 @@ function openEditMember(id) {
   backdrop.querySelector('.close-x').addEventListener('click', () => backdrop.remove());
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
 
+  if (isAdmin) {
+    el('edit-restrict-mailboxes').addEventListener('change', (e) => {
+      el('mailbox-access-list').style.display = e.target.checked ? 'block' : 'none';
+    });
+  }
+
   el('edit-member-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = { name: el('edit-name').value.trim() };
@@ -926,8 +946,24 @@ function openEditMember(id) {
     const password = el('edit-password').value;
     if (password) body.password = password;
 
+    if (isAdmin) {
+      const restrict = el('edit-restrict-mailboxes').checked;
+      const checked = Array.from(document.querySelectorAll('.mailbox-access-checkbox:checked')).map((c) => Number(c.value));
+      if (restrict && checked.length === 0) {
+        el('edit-member-error').innerHTML = `<div class="error-banner">Check at least one mailbox, or turn off "Restrict to specific mailboxes" for unrestricted access.</div>`;
+        return;
+      }
+    }
+
     try {
       await api(`/roster/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      if (isAdmin) {
+        const restrict = el('edit-restrict-mailboxes').checked;
+        const mailbox_ids = restrict
+          ? Array.from(document.querySelectorAll('.mailbox-access-checkbox:checked')).map((c) => Number(c.value))
+          : [];
+        await api(`/roster/${id}/mailbox-access`, { method: 'PUT', body: JSON.stringify({ mailbox_ids }) });
+      }
       await loadShellData();
       backdrop.remove();
       if (id === state.user.id) {

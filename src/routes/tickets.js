@@ -4,6 +4,7 @@ const requireAuth = require('../middleware/requireAuth');
 const requireAdmin = require('../middleware/requireAdmin');
 const gmailAdapter = require('../services/gmailAdapter');
 const { computeTicketTat } = require('../services/tat');
+const { getAccessibleMailboxIds, mailboxAllowed } = require('../services/mailboxAccess');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -41,14 +42,18 @@ async function getTicketOr404(req, res) {
 
 // Non-admin ("agent") team members only ever get to see/act on tickets
 // assigned to them - not the whole team's inbox. Admins can see and touch
-// everything. Returns true (allowed) / false (should 403).
-function canAccessTicket(req, ticket) {
+// everything *within their granted mailboxes* (mailbox_access is a
+// separate, additional restriction from the admin/agent role - see
+// services/mailboxAccess.js). Returns true (allowed) / false (should 403).
+async function canAccessTicket(req, ticket) {
+  const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
+  if (!mailboxAllowed(accessibleMailboxIds, ticket.mailbox_id)) return false;
   if (req.user.is_admin) return true;
   return ticket.assignee_id === req.user.id;
 }
 
-function requireTicketAccess(req, res, ticket) {
-  if (!canAccessTicket(req, ticket)) {
+async function requireTicketAccess(req, res, ticket) {
+  if (!(await canAccessTicket(req, ticket))) {
     res.status(403).json({ error: 'You can only view or act on tickets assigned to you' });
     return false;
   }
@@ -88,6 +93,22 @@ router.get('/', async (req, res, next) => {
       } else {
         clauses.push('t.assignee_id = ?');
         params.push(assignee_id);
+      }
+    }
+
+    // Mailbox access allow-list - a separate, additional restriction from
+    // the admin/agent role above (see services/mailboxAccess.js). null
+    // means unrestricted, so no clause is added for members who've never
+    // had specific mailboxes granted.
+    const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
+    if (accessibleMailboxIds !== null) {
+      if (accessibleMailboxIds.length === 0) {
+        // Granted access to zero mailboxes - should see nothing, not
+        // everything. `= ANY('{}')` never matches any row.
+        clauses.push('1 = 0');
+      } else {
+        clauses.push('t.mailbox_id = ANY(?)');
+        params.push(accessibleMailboxIds);
       }
     }
 
@@ -138,7 +159,7 @@ router.get('/:id', async (req, res, next) => {
   try {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
-    if (!requireTicketAccess(req, res, ticket)) return;
+    if (!(await requireTicketAccess(req, res, ticket))) return;
 
     const mailbox = await db.prepare('SELECT * FROM mailboxes WHERE id = ?').get(ticket.mailbox_id);
     // Note: a whole email thread now maps to a single ticket row (see
@@ -169,10 +190,27 @@ router.patch('/:id/assign', requireAdmin, async (req, res, next) => {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
 
+    // Admins are still mailbox-scoped (a separate, additional restriction
+    // from is_admin - see services/mailboxAccess.js): can't act on a ticket
+    // outside their own granted mailboxes.
+    const actingUserMailboxes = await getAccessibleMailboxIds(req.user.id);
+    if (!mailboxAllowed(actingUserMailboxes, ticket.mailbox_id)) {
+      return res.status(403).json({ error: "You don't have access to this ticket's mailbox" });
+    }
+
     const { assignee_id } = req.body || {};
     if (assignee_id) {
       const member = await db.prepare('SELECT * FROM team_members WHERE id = ?').get(assignee_id);
       if (!member) return res.status(400).json({ error: 'Unknown team member' });
+
+      // Don't assign a ticket to someone who wouldn't be able to see it -
+      // that'd be a ticket permanently stuck invisible to its own assignee.
+      const assigneeMailboxes = await getAccessibleMailboxIds(assignee_id);
+      if (!mailboxAllowed(assigneeMailboxes, ticket.mailbox_id)) {
+        return res.status(400).json({
+          error: "That team member doesn't have access to this ticket's mailbox - grant it on the Team page first",
+        });
+      }
     }
 
     const newStatus = assignee_id ? 'assigned' : ticket.status === 'assigned' ? 'unassigned' : ticket.status;
@@ -210,7 +248,7 @@ router.patch('/:id/status', async (req, res, next) => {
   try {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
-    if (!requireTicketAccess(req, res, ticket)) return;
+    if (!(await requireTicketAccess(req, res, ticket))) return;
 
     const { status } = req.body || {};
     const allowed = ['unassigned', 'assigned', 'replied', 'closed'];
@@ -240,7 +278,7 @@ router.patch('/:id/tags', async (req, res, next) => {
   try {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
-    if (!requireTicketAccess(req, res, ticket)) return;
+    if (!(await requireTicketAccess(req, res, ticket))) return;
 
     const { tags } = req.body || {};
     if (!Array.isArray(tags) || !tags.every((t) => typeof t === 'string')) {
@@ -267,7 +305,7 @@ router.patch('/:id/automated', async (req, res, next) => {
   try {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
-    if (!requireTicketAccess(req, res, ticket)) return;
+    if (!(await requireTicketAccess(req, res, ticket))) return;
 
     const { is_automated, reason } = req.body || {};
     if (typeof is_automated !== 'boolean') {
@@ -299,7 +337,7 @@ router.post('/:id/reply', async (req, res, next) => {
   try {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
-    if (!requireTicketAccess(req, res, ticket)) return;
+    if (!(await requireTicketAccess(req, res, ticket))) return;
 
     const { body } = req.body || {};
     if (!body || !body.trim()) {
@@ -350,7 +388,7 @@ router.post('/:id/mark-replied-externally', async (req, res, next) => {
   try {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
-    if (!requireTicketAccess(req, res, ticket)) return;
+    if (!(await requireTicketAccess(req, res, ticket))) return;
 
     await db
       .prepare(

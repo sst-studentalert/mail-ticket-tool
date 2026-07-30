@@ -13,7 +13,18 @@ router.use(requireAuth);
 router.get('/', async (req, res, next) => {
   try {
     const rows = await db.prepare('SELECT * FROM team_members ORDER BY name').all();
-    res.json({ members: rows.map(publicUser) });
+    const access = await db.prepare('SELECT team_member_id, mailbox_id FROM mailbox_access').all();
+    const accessByMember = new Map();
+    for (const row of access) {
+      if (!accessByMember.has(row.team_member_id)) accessByMember.set(row.team_member_id, []);
+      accessByMember.get(row.team_member_id).push(row.mailbox_id);
+    }
+    // mailbox_ids: [] means unrestricted (sees every mailbox) - see the
+    // mailbox_access table comment in db.js. Included for every member (not
+    // just admins) so the Team page can show/edit it for anyone.
+    res.json({
+      members: rows.map((r) => ({ ...publicUser(r), mailbox_ids: accessByMember.get(r.id) || [] })),
+    });
   } catch (err) {
     next(err);
   }
@@ -112,6 +123,37 @@ router.patch('/:id', async (req, res, next) => {
 
     const updated = await db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
     res.json({ member: publicUser(updated) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/roster/:id/mailbox-access - admin-only. Body: { mailbox_ids: [...] }.
+// Replaces this member's mailbox allow-list wholesale (empty array = fully
+// unrestricted, sees every mailbox - see mailbox_access table comment in
+// db.js). Applies regardless of the member's own is_admin flag: an admin
+// with grants set here is scoped to those mailboxes for ticket visibility,
+// same as an agent would be, though they keep their admin-only management
+// abilities (Team/Mailboxes pages, team-wide Dashboard) either way.
+router.put('/:id/mailbox-access', requireAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const member = await db.prepare('SELECT id FROM team_members WHERE id = ?').get(id);
+    if (!member) return res.status(404).json({ error: 'Team member not found' });
+
+    const { mailbox_ids } = req.body || {};
+    if (!Array.isArray(mailbox_ids)) {
+      return res.status(400).json({ error: 'mailbox_ids must be an array (possibly empty)' });
+    }
+
+    await db.prepare('DELETE FROM mailbox_access WHERE team_member_id = ?').run(id);
+    for (const mailboxId of mailbox_ids) {
+      await db
+        .prepare('INSERT INTO mailbox_access (team_member_id, mailbox_id) VALUES (?, ?)')
+        .run(id, mailboxId);
+    }
+
+    res.json({ ok: true, mailbox_ids });
   } catch (err) {
     next(err);
   }

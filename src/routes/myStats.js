@@ -10,6 +10,7 @@ const express = require('express');
 const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 const { fmtDuration } = require('../services/tat');
+const { getAccessibleMailboxIds } = require('../services/mailboxAccess');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -42,6 +43,24 @@ router.get('/', async (req, res, next) => {
     }
     const dateSql = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : '';
 
+    // Mailbox access allow-list (see services/mailboxAccess.js). In
+    // practice a ticket can't get assigned to someone outside their granted
+    // mailboxes any more (see routes/tickets.js's /assign guard), but this
+    // is kept as a defensive second layer in case access is revoked after
+    // the fact - so "my tickets" never shows something from a mailbox this
+    // person no longer has access to.
+    const accessibleMailboxIds = await getAccessibleMailboxIds(userId);
+    let mailboxSql = '';
+    let mailboxParams = [];
+    if (accessibleMailboxIds !== null) {
+      if (accessibleMailboxIds.length === 0) {
+        mailboxSql = 'AND 1 = 0';
+      } else {
+        mailboxSql = 'AND mailbox_id = ANY(?)';
+        mailboxParams = [accessibleMailboxIds];
+      }
+    }
+
     async function tatFor(milestoneExpr) {
       const row = await db
         .prepare(
@@ -49,9 +68,9 @@ router.get('/', async (req, res, next) => {
                   COUNT(*) AS n
            FROM tickets
            WHERE is_automated = 0 AND assignee_id = ? AND ${milestoneExpr} IS NOT NULL AND first_received_at IS NOT NULL
-             ${dateSql}`
+             ${dateSql} ${mailboxSql}`
         )
-        .get(userId, ...dateParams);
+        .get(userId, ...dateParams, ...mailboxParams);
       const avgSeconds = row.avg_seconds == null ? null : Number(row.avg_seconds);
       return { avg_seconds: avgSeconds, avg_human: fmtDuration(avgSeconds), sample_size: row.n };
     }
@@ -60,9 +79,9 @@ router.get('/', async (req, res, next) => {
     for (const status of STATUSES) {
       const row = await db
         .prepare(
-          `SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 0 AND assignee_id = ? AND status = ? ${dateSql}`
+          `SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 0 AND assignee_id = ? AND status = ? ${dateSql} ${mailboxSql}`
         )
-        .get(userId, status, ...dateParams);
+        .get(userId, status, ...dateParams, ...mailboxParams);
       counts[status] = row.c;
     }
     counts.total = STATUSES.reduce((sum, s) => sum + counts[s], 0);
@@ -78,11 +97,11 @@ router.get('/', async (req, res, next) => {
                 SUM(CASE WHEN t.status = 'closed' THEN 1 ELSE 0 END) AS closed
          FROM tickets t
          JOIN mailboxes m ON m.id = t.mailbox_id
-         WHERE t.is_automated = 0 AND t.assignee_id = ? ${dateSql}
+         WHERE t.is_automated = 0 AND t.assignee_id = ? ${dateSql} ${mailboxSql.replace(/mailbox_id/, 't.mailbox_id')}
          GROUP BY m.id
          ORDER BY m.email`
       )
-      .all(userId, ...dateParams);
+      .all(userId, ...dateParams, ...mailboxParams);
 
     const tat = {
       first_response: await tatFor(FIRST_RESPONSE_EXPR),
@@ -94,8 +113,8 @@ router.get('/', async (req, res, next) => {
     // excluded from every count above, same as the team Dashboard).
     const automatedExcludedTotal = (
       await db
-        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 1 AND assignee_id = ? ${dateSql}`)
-        .get(userId, ...dateParams)
+        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 1 AND assignee_id = ? ${dateSql} ${mailboxSql}`)
+        .get(userId, ...dateParams, ...mailboxParams)
     ).c;
 
     res.json({
