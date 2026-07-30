@@ -824,13 +824,20 @@ async function renderMailboxes() {
 async function renderMailboxList() {
   const { mailboxes } = await api('/mailboxes');
   state.mailboxes = mailboxes;
+  // Only show "Disconnect" for mailboxes that actually have a live token
+  // (m.connected, from the API's !!refresh_token check) - showing it for an
+  // already-disconnected mailbox implied there was still something to
+  // disconnect, which there isn't; re-connecting is what "+ Connect new
+  // mailbox" above is for.
   el('mailbox-list').innerHTML = mailboxes.map((m) => `
     <div class="list-item">
       <div>
         <div>${escapeHtml(m.email)}</div>
         <div class="meta">Status: ${escapeHtml(m.status)} ${m.last_synced_at ? '&middot; last synced ' + fmtDate(m.last_synced_at) : ''}</div>
       </div>
-      <button class="danger" data-disconnect="${m.id}">Disconnect</button>
+      ${m.connected
+        ? `<button class="danger" data-disconnect="${m.id}">Disconnect</button>`
+        : `<span class="small">Use "+ Connect new mailbox" above to reconnect</span>`}
     </div>
   `).join('') || '<p class="small">No mailboxes connected yet.</p>';
 
