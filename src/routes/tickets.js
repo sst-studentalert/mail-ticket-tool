@@ -4,7 +4,7 @@ const requireAuth = require('../middleware/requireAuth');
 const requireAdmin = require('../middleware/requireAdmin');
 const gmailAdapter = require('../services/gmailAdapter');
 const { computeTicketTat } = require('../services/tat');
-const { getAccessibleMailboxIds, mailboxAllowed } = require('../services/mailboxAccess');
+const { getAccessibleMailboxIds, getFullAccessMailboxIds, mailboxAllowed } = require('../services/mailboxAccess');
 const { recordMessage } = require('../services/poller');
 
 const router = express.Router();
@@ -42,15 +42,20 @@ async function getTicketOr404(req, res) {
 }
 
 // Non-admin ("agent") team members only ever get to see/act on tickets
-// assigned to them - not the whole team's inbox. Admins can see and touch
-// everything *within their granted mailboxes* (mailbox_access is a
-// separate, additional restriction from the admin/agent role - see
-// services/mailboxAccess.js). Returns true (allowed) / false (should 403).
+// assigned to them - not the whole team's inbox - UNLESS they've been given
+// "full access" to that specific mailbox (see the full_access column
+// comment in db.js), in which case they see/act on every ticket in it, same
+// as an admin would. Admins can see and touch everything *within their
+// granted mailboxes* (mailbox_access is a separate, additional restriction
+// from the admin/agent role - see services/mailboxAccess.js). Returns true
+// (allowed) / false (should 403).
 async function canAccessTicket(req, ticket) {
   const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
   if (!mailboxAllowed(accessibleMailboxIds, ticket.mailbox_id)) return false;
   if (req.user.is_admin) return true;
-  return ticket.assignee_id === req.user.id;
+  if (ticket.assignee_id === req.user.id) return true;
+  const fullAccessMailboxIds = await getFullAccessMailboxIds(req.user.id);
+  return fullAccessMailboxIds.includes(ticket.mailbox_id);
 }
 
 async function requireTicketAccess(req, res, ticket) {
@@ -85,9 +90,18 @@ router.get('/', async (req, res, next) => {
     }
 
     if (!req.user.is_admin) {
-      // Force-scope: agents can only ever see tickets assigned to them.
-      clauses.push('t.assignee_id = ?');
-      params.push(req.user.id);
+      // Force-scope: agents can only ever see tickets assigned to them,
+      // except in mailboxes where they've been given "full access" (see
+      // full_access column comment in db.js) - there they see everything,
+      // same as an admin would within that mailbox.
+      const fullAccessMailboxIds = await getFullAccessMailboxIds(req.user.id);
+      if (fullAccessMailboxIds.length) {
+        clauses.push('(t.assignee_id = ? OR t.mailbox_id = ANY(?))');
+        params.push(req.user.id, fullAccessMailboxIds);
+      } else {
+        clauses.push('t.assignee_id = ?');
+        params.push(req.user.id);
+      }
     } else if (assignee_id) {
       if (assignee_id === 'unassigned') {
         clauses.push('t.assignee_id IS NULL');

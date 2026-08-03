@@ -967,10 +967,16 @@ function openEditMember(id) {
         <p class="small" style="margin-top:4px;">Off = sees every mailbox (default). Applies to admins and agents alike - even an admin only sees tickets from the mailboxes checked below once this is turned on.</p>
         <div id="mailbox-access-list" style="display:${member.mailbox_ids.length ? 'block' : 'none'}; margin-top:8px;">
           ${state.mailboxes.map((m) => `
-            <label style="display:flex; align-items:center; gap:6px; margin:4px 0;">
-              <input type="checkbox" class="mailbox-access-checkbox" value="${m.id}" style="width:auto;" ${member.mailbox_ids.includes(m.id) ? 'checked' : ''} />
-              ${escapeHtml(m.email)}
-            </label>
+            <div style="display:flex; align-items:center; gap:14px; margin:4px 0;">
+              <label style="display:flex; align-items:center; gap:6px; margin:0;">
+                <input type="checkbox" class="mailbox-access-checkbox" value="${m.id}" style="width:auto;" ${member.mailbox_ids.includes(m.id) ? 'checked' : ''} />
+                ${escapeHtml(m.email)}
+              </label>
+              <label style="display:flex; align-items:center; gap:6px; margin:0; color:var(--muted); font-size:12px;">
+                <input type="checkbox" class="mailbox-full-access-checkbox" value="${m.id}" style="width:auto;" ${(member.full_access_mailbox_ids || []).includes(m.id) ? 'checked' : ''} ${member.mailbox_ids.includes(m.id) ? '' : 'disabled'} />
+                Full access (see all tickets, not just assigned)
+              </label>
+            </div>
           `).join('') || '<p class="small">No mailboxes connected yet.</p>'}
         </div>
         ` : ''}
@@ -987,6 +993,16 @@ function openEditMember(id) {
   if (isAdmin) {
     el('edit-restrict-mailboxes').addEventListener('change', (e) => {
       el('mailbox-access-list').style.display = e.target.checked ? 'block' : 'none';
+    });
+    // Full-access only makes sense for a mailbox that's actually checked -
+    // keep its checkbox disabled (and unchecked) otherwise.
+    document.querySelectorAll('.mailbox-access-checkbox').forEach((cb) => {
+      cb.addEventListener('change', (e) => {
+        const fullAccessBox = document.querySelector(`.mailbox-full-access-checkbox[value="${e.target.value}"]`);
+        if (!fullAccessBox) return;
+        fullAccessBox.disabled = !e.target.checked;
+        if (!e.target.checked) fullAccessBox.checked = false;
+      });
     });
   }
 
@@ -1016,7 +1032,13 @@ function openEditMember(id) {
         const mailbox_ids = restrict
           ? Array.from(document.querySelectorAll('.mailbox-access-checkbox:checked')).map((c) => Number(c.value))
           : [];
-        await api(`/roster/${id}/mailbox-access`, { method: 'PUT', body: JSON.stringify({ mailbox_ids }) });
+        const full_access_mailbox_ids = restrict
+          ? Array.from(document.querySelectorAll('.mailbox-full-access-checkbox:checked')).map((c) => Number(c.value))
+          : [];
+        await api(`/roster/${id}/mailbox-access`, {
+          method: 'PUT',
+          body: JSON.stringify({ mailbox_ids, full_access_mailbox_ids }),
+        });
       }
       await loadShellData();
       backdrop.remove();

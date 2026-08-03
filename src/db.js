@@ -167,9 +167,16 @@ async function migrate() {
     -- separate concern from the is_admin flag (which still gates
     -- roster/mailbox management and the team-wide Dashboard regardless of
     -- mailbox grants).
+    -- full_access: within a granted mailbox, an agent normally still only
+    -- sees/acts on tickets assigned to them (see canAccessTicket in
+    -- tickets.js) - full_access=1 lifts that for this one mailbox, so they
+    -- see and can act on every ticket in it, same as an admin would, without
+    -- needing to actually be an admin or be assigned each ticket first.
+    -- Reassignment (PATCH /:id/assign) stays admin-only regardless.
     CREATE TABLE IF NOT EXISTS mailbox_access (
       team_member_id INTEGER NOT NULL REFERENCES team_members(id) ON DELETE CASCADE,
       mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+      full_access INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (team_member_id, mailbox_id)
     );
     CREATE INDEX IF NOT EXISTS idx_mailbox_access_member ON mailbox_access(team_member_id);
@@ -209,6 +216,7 @@ async function migrate() {
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS first_replied_at TIMESTAMPTZ;
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
     ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS last_sent_internal_date TEXT;
+    ALTER TABLE mailbox_access ADD COLUMN IF NOT EXISTS full_access INTEGER NOT NULL DEFAULT 0;
 
     UPDATE tickets SET first_received_at = received_at WHERE first_received_at IS NULL;
   `);

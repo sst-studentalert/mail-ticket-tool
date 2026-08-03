@@ -13,17 +13,29 @@ router.use(requireAuth);
 router.get('/', async (req, res, next) => {
   try {
     const rows = await db.prepare('SELECT * FROM team_members ORDER BY name').all();
-    const access = await db.prepare('SELECT team_member_id, mailbox_id FROM mailbox_access').all();
+    const access = await db.prepare('SELECT team_member_id, mailbox_id, full_access FROM mailbox_access').all();
     const accessByMember = new Map();
+    const fullAccessByMember = new Map();
     for (const row of access) {
       if (!accessByMember.has(row.team_member_id)) accessByMember.set(row.team_member_id, []);
       accessByMember.get(row.team_member_id).push(row.mailbox_id);
+      if (row.full_access) {
+        if (!fullAccessByMember.has(row.team_member_id)) fullAccessByMember.set(row.team_member_id, []);
+        fullAccessByMember.get(row.team_member_id).push(row.mailbox_id);
+      }
     }
     // mailbox_ids: [] means unrestricted (sees every mailbox) - see the
-    // mailbox_access table comment in db.js. Included for every member (not
-    // just admins) so the Team page can show/edit it for anyone.
+    // mailbox_access table comment in db.js. full_access_mailbox_ids is the
+    // subset of those where the member sees every ticket in the mailbox, not
+    // just ones assigned to them (see full_access column comment in db.js).
+    // Included for every member (not just admins) so the Team page can
+    // show/edit it for anyone.
     res.json({
-      members: rows.map((r) => ({ ...publicUser(r), mailbox_ids: accessByMember.get(r.id) || [] })),
+      members: rows.map((r) => ({
+        ...publicUser(r),
+        mailbox_ids: accessByMember.get(r.id) || [],
+        full_access_mailbox_ids: fullAccessByMember.get(r.id) || [],
+      })),
     });
   } catch (err) {
     next(err);
@@ -128,12 +140,18 @@ router.patch('/:id', async (req, res, next) => {
   }
 });
 
-// PUT /api/roster/:id/mailbox-access - admin-only. Body: { mailbox_ids: [...] }.
-// Replaces this member's mailbox allow-list wholesale (empty array = fully
-// unrestricted, sees every mailbox - see mailbox_access table comment in
-// db.js). Applies regardless of the member's own is_admin flag: an admin
-// with grants set here is scoped to those mailboxes for ticket visibility,
-// same as an agent would be, though they keep their admin-only management
+// PUT /api/roster/:id/mailbox-access - admin-only.
+// Body: { mailbox_ids: [...], full_access_mailbox_ids: [...] } (the second
+// key is optional, defaults to []). Replaces this member's mailbox
+// allow-list wholesale (empty mailbox_ids = fully unrestricted, sees every
+// mailbox - see mailbox_access table comment in db.js). Any id in
+// full_access_mailbox_ids must also be present in mailbox_ids - it's a
+// qualifier on an existing grant (full visibility within that mailbox, not
+// just tickets assigned to them - see full_access column comment in db.js),
+// not a way to grant a mailbox on its own.
+// Applies regardless of the member's own is_admin flag: an admin with
+// grants set here is scoped to those mailboxes for ticket visibility, same
+// as an agent would be, though they keep their admin-only management
 // abilities (Team/Mailboxes pages, team-wide Dashboard) either way.
 router.put('/:id/mailbox-access', requireAdmin, async (req, res, next) => {
   try {
@@ -141,19 +159,28 @@ router.put('/:id/mailbox-access', requireAdmin, async (req, res, next) => {
     const member = await db.prepare('SELECT id FROM team_members WHERE id = ?').get(id);
     if (!member) return res.status(404).json({ error: 'Team member not found' });
 
-    const { mailbox_ids } = req.body || {};
+    const { mailbox_ids, full_access_mailbox_ids } = req.body || {};
     if (!Array.isArray(mailbox_ids)) {
       return res.status(400).json({ error: 'mailbox_ids must be an array (possibly empty)' });
     }
+    const fullAccessIds = Array.isArray(full_access_mailbox_ids) ? full_access_mailbox_ids : [];
+    const mailboxIdSet = new Set(mailbox_ids.map(Number));
+    const invalidFullAccess = fullAccessIds.filter((mid) => !mailboxIdSet.has(Number(mid)));
+    if (invalidFullAccess.length) {
+      return res.status(400).json({
+        error: 'full_access_mailbox_ids can only include mailboxes already present in mailbox_ids',
+      });
+    }
+    const fullAccessSet = new Set(fullAccessIds.map(Number));
 
     await db.prepare('DELETE FROM mailbox_access WHERE team_member_id = ?').run(id);
     for (const mailboxId of mailbox_ids) {
       await db
-        .prepare('INSERT INTO mailbox_access (team_member_id, mailbox_id) VALUES (?, ?)')
-        .run(id, mailboxId);
+        .prepare('INSERT INTO mailbox_access (team_member_id, mailbox_id, full_access) VALUES (?, ?, ?)')
+        .run(id, mailboxId, fullAccessSet.has(Number(mailboxId)) ? 1 : 0);
     }
 
-    res.json({ ok: true, mailbox_ids });
+    res.json({ ok: true, mailbox_ids, full_access_mailbox_ids: fullAccessIds });
   } catch (err) {
     next(err);
   }
