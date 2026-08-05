@@ -217,6 +217,11 @@ async function migrate() {
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
     ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS last_sent_internal_date TEXT;
     ALTER TABLE mailbox_access ADD COLUMN IF NOT EXISTS full_access INTEGER NOT NULL DEFAULT 0;
+    -- Set via the "Office hours" quick-add next to Tags in the ticket
+    -- detail panel: picking a date/time here both stores it (so it can be
+    -- shown/sorted/filtered later) and adds an "office-hours" tag as a
+    -- visible label - see PATCH /:id/office-hours in routes/tickets.js.
+    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS office_hours_at TIMESTAMPTZ;
 
     UPDATE tickets SET first_received_at = received_at WHERE first_received_at IS NULL;
   `);

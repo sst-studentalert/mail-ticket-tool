@@ -176,6 +176,17 @@ function fmtDate(iso) {
   }
 }
 
+// Converts an ISO timestamp to the "YYYY-MM-DDTHH:mm" format a
+// <input type="datetime-local"> expects, in the browser's local timezone -
+// used to prefill the Office hours picker when changing an existing slot.
+function toDatetimeLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 // ---------- Tickets list ----------
 
 async function renderTickets() {
@@ -450,6 +461,21 @@ async function openTicket(id) {
             <label>Tags (comma separated)</label>
             <input id="tags-input" value="${escapeHtml(ticket.tags.join(', '))}" />
             <button class="secondary" id="save-tags-btn" style="margin-top:6px;">Save tags</button>
+            <div style="margin-top:8px;">
+              ${ticket.office_hours_at ? `
+                <div class="small">Office hours: <strong>${escapeHtml(fmtDate(ticket.office_hours_at))}</strong>
+                  <button type="button" class="secondary" id="change-office-hours-btn" style="margin-left:6px; padding:2px 8px;">Change</button>
+                  <button type="button" class="secondary" id="clear-office-hours-btn" style="padding:2px 8px;">Clear</button>
+                </div>
+              ` : `
+                <button type="button" class="secondary" id="add-office-hours-btn">+ Office hours</button>
+              `}
+              <div id="office-hours-picker" style="display:none; margin-top:8px;">
+                <input type="datetime-local" id="office-hours-input" value="${ticket.office_hours_at ? toDatetimeLocal(ticket.office_hours_at) : ''}" />
+                <button type="button" id="save-office-hours-btn" style="margin-top:6px;">Save slot</button>
+                <button type="button" class="secondary" id="cancel-office-hours-btn" style="margin-top:6px;">Cancel</button>
+              </div>
+            </div>
           </div>
           <div class="side-field">
             <label>Automated</label>
@@ -496,6 +522,38 @@ async function openTicket(id) {
     await api(`/tickets/${id}/tags`, { method: 'PATCH', body: JSON.stringify({ tags }) });
     await loadTickets();
   });
+
+  const showOfficeHoursPicker = () => { el('office-hours-picker').style.display = 'block'; };
+  if (el('add-office-hours-btn')) el('add-office-hours-btn').addEventListener('click', showOfficeHoursPicker);
+  if (el('change-office-hours-btn')) el('change-office-hours-btn').addEventListener('click', showOfficeHoursPicker);
+  if (el('cancel-office-hours-btn')) {
+    el('cancel-office-hours-btn').addEventListener('click', () => {
+      el('office-hours-picker').style.display = 'none';
+    });
+  }
+  if (el('clear-office-hours-btn')) {
+    el('clear-office-hours-btn').addEventListener('click', async () => {
+      await api(`/tickets/${id}/office-hours`, { method: 'PATCH', body: JSON.stringify({ office_hours_at: null }) });
+      await loadTickets();
+      closeTicketModal();
+      openTicket(id);
+    });
+  }
+  if (el('save-office-hours-btn')) {
+    el('save-office-hours-btn').addEventListener('click', async () => {
+      const value = el('office-hours-input').value;
+      if (!value) return;
+      // datetime-local gives a local-time string with no timezone info -
+      // `new Date(...)` parses it as local time, and toISOString() converts
+      // that to UTC for storage, so it round-trips correctly regardless of
+      // the browser's timezone.
+      const iso = new Date(value).toISOString();
+      await api(`/tickets/${id}/office-hours`, { method: 'PATCH', body: JSON.stringify({ office_hours_at: iso }) });
+      await loadTickets();
+      closeTicketModal();
+      openTicket(id);
+    });
+  }
 
   el('automated-checkbox').addEventListener('change', async (e) => {
     await api(`/tickets/${id}/automated`, { method: 'PATCH', body: JSON.stringify({ is_automated: e.target.checked }) });

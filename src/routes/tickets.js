@@ -322,6 +322,51 @@ router.patch('/:id/tags', async (req, res, next) => {
   }
 });
 
+// PATCH /api/tickets/:id/office-hours - sets (or clears) a scheduled
+// office-hours slot for this ticket. Body: { office_hours_at: <ISO string
+// or null> }. Setting a non-null value also adds an "office-hours" tag
+// (if not already present) so it's visible/filterable the same way any
+// other tag is, alongside the actual timestamp for later display/sorting.
+router.patch('/:id/office-hours', async (req, res, next) => {
+  try {
+    const ticket = await getTicketOr404(req, res);
+    if (!ticket) return;
+    if (!(await requireTicketAccess(req, res, ticket))) return;
+
+    const { office_hours_at } = req.body || {};
+    let parsed = null;
+    if (office_hours_at !== null && office_hours_at !== undefined) {
+      parsed = new Date(office_hours_at);
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({ error: 'office_hours_at must be a valid date/time or null' });
+      }
+    }
+
+    let tags = JSON.parse(ticket.tags || '[]');
+    if (parsed && !tags.some((t) => t.toLowerCase() === 'office-hours')) {
+      tags = [...tags, 'office-hours'];
+    }
+
+    await db
+      .prepare(
+        `UPDATE tickets SET office_hours_at = ?, tags = ?, updated_at = datetime('now') WHERE id = ?`
+      )
+      .run(parsed ? parsed.toISOString() : null, JSON.stringify(tags), ticket.id);
+
+    await logEvent(
+      ticket.id,
+      req.user.id,
+      'office_hours_set',
+      parsed ? `Office hours slot set to ${parsed.toISOString()}` : 'Office hours slot cleared'
+    );
+
+    const updated = await db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticket.id);
+    res.json({ ticket: serializeTicket(updated) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PATCH /api/tickets/:id/automated - manual override of the auto heuristic.
 // Setting this always sets automated_source='manual', so it sticks
 // regardless of what the heuristic would have said.
