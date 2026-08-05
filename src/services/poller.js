@@ -46,13 +46,14 @@ async function logEvent(ticketId, eventType, detail) {
 // twice - which already happens naturally on every poll cycle - can't
 // create duplicate rows.
 async function recordMessage(ticketId, { gmailMessageId, direction, fromAddress, body, sentAt }) {
-  await db
+  const result = await db
     .prepare(
       `INSERT INTO ticket_messages (ticket_id, gmail_message_id, direction, from_address, body, sent_at)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (gmail_message_id) WHERE gmail_message_id IS NOT NULL DO NOTHING`
     )
     .run(ticketId, gmailMessageId || null, direction, fromAddress || null, body || null, sentAt);
+  return { inserted: (result.changes || 0) > 0 };
 }
 
 // Returns { ticketId, created } - created=true if a new ticket row was
@@ -162,20 +163,35 @@ async function createTicketFromMessage(mailbox, message) {
 }
 
 // Checks the mailbox's Sent folder for outgoing messages and, for any whose
-// thread matches an open ticket (still unassigned/assigned - i.e. nobody's
-// marked it handled yet), auto-marks that ticket replied. This is how a
-// reply sent directly from Gmail (bypassing this tool) still gets picked up,
-// instead of relying on someone remembering to click "Mark replied
-// externally". If the reply was actually sent *through* this tool, the
-// ticket's status is already 'replied' by the time this runs, so it's
-// naturally a no-op for those (no double-processing).
+// thread matches a ticket we already know about, records that message into
+// ticket_messages regardless of the ticket's current status - a thread can
+// keep getting outbound replies (e.g. a staff member forwarding it to a
+// colleague) well after the FIRST reply already flipped it to "replied", and
+// those later messages deserve to show up in the conversation too, not just
+// the first one. On top of that recording, if the ticket is STILL in an
+// actionable state (unassigned/assigned - i.e. nobody's marked it handled
+// yet), this also auto-marks it replied. This is how a reply sent directly
+// from Gmail (bypassing this tool) still gets picked up, instead of relying
+// on someone remembering to click "Mark replied externally". If the reply
+// was actually sent *through* this tool, the ticket's status is already
+// 'replied' by the time this runs, so the status-flip part is naturally a
+// no-op for those (no double-processing) - recordMessage's own
+// gmail_message_id dedup keeps the message-recording part a no-op too.
 async function detectExternalReply(mailbox, sentMessage) {
   const ticket = await db
-    .prepare(
-      `SELECT * FROM tickets WHERE mailbox_id = ? AND gmail_thread_id = ? AND status IN ('unassigned', 'assigned')`
-    )
+    .prepare(`SELECT * FROM tickets WHERE mailbox_id = ? AND gmail_thread_id = ?`)
     .get(mailbox.id, sentMessage.providerThreadId);
   if (!ticket) return false;
+
+  await recordMessage(ticket.id, {
+    gmailMessageId: sentMessage.providerMessageId,
+    direction: 'outbound',
+    fromAddress: sentMessage.from,
+    body: sentMessage.bodyText,
+    sentAt: sentMessage.receivedAt,
+  });
+
+  if (!['unassigned', 'assigned'].includes(ticket.status)) return false;
 
   // Guard against misattributing an OUTBOUND message that's actually OLDER
   // than the ticket itself (e.g. the original message that started this
@@ -213,14 +229,6 @@ async function detectExternalReply(mailbox, sentMessage) {
       'reply_detected_external',
       `Detected an outgoing reply in Sent (${sentMessage.providerMessageId}), not sent via this tool`
     );
-
-  await recordMessage(ticket.id, {
-    gmailMessageId: sentMessage.providerMessageId,
-    direction: 'outbound',
-    fromAddress: sentMessage.from,
-    body: sentMessage.bodyText,
-    sentAt: sentMessage.receivedAt,
-  });
 
   return true;
 }

@@ -284,6 +284,30 @@ async function listSentMessages(mailboxRow) {
   return results;
 }
 
+// Fetches every message in a Gmail thread (not just what's newer than a
+// checkpoint) and normalizes each one, tagging its direction based on Gmail's
+// own SENT label. Used for backfilling a ticket's full conversation history
+// into ticket_messages (see scripts/backfill-thread-messages.js) - the
+// regular checkpoint-based listNewMessages/listSentMessages scans can
+// permanently miss messages that predate a ticket's creation (the mailbox's
+// own original outbound message, before anyone had replied) or that arrive
+// after a ticket's status has already moved past the point poller.js was
+// still recording Sent messages for - this fetches the ground truth for one
+// thread directly instead of relying on those incremental checkpoints.
+async function getThreadMessages(mailboxRow, threadId) {
+  const gmail = clientFor(mailboxRow);
+  const { data } = await gmail.users.threads.get({
+    userId: 'me',
+    id: threadId,
+    format: 'full',
+  });
+  return (data.messages || []).map((raw) => {
+    const normalized = normalizeMessage(raw);
+    const labelIds = raw.labelIds || [];
+    return { ...normalized, direction: labelIds.includes('SENT') ? 'outbound' : 'inbound' };
+  });
+}
+
 function base64url(input) {
   return Buffer.from(input)
     .toString('base64')
@@ -336,5 +360,6 @@ module.exports = {
   listNewMessages,
   listSentMessages,
   getMessage,
+  getThreadMessages,
   sendReply,
 };
