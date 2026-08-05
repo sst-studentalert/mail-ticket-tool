@@ -104,6 +104,7 @@ function renderApp() {
   const app = document.getElementById('app');
   const nav = [
     ['tickets', 'Tickets'],
+    ['officehours', 'Office Hours'],
     ['mystats', 'My Stats'],
     ...(state.user.is_admin
       ? [
@@ -158,6 +159,7 @@ function renderApp() {
   else if (state.page === 'mystats') renderMyStats();
   else if (state.page === 'mailboxes') renderMailboxes();
   else if (state.page === 'roster') renderRoster();
+  else if (state.page === 'officehours') renderOfficeHours();
   else renderTickets();
 }
 
@@ -583,6 +585,108 @@ function closeTicketModal() {
   const modal = document.getElementById('ticket-modal');
   if (modal) modal.remove();
   state.openTicketId = null;
+}
+
+// ---------- Office Hours tab ----------
+// Lists every ticket tagged "office-hours" (set via the picker next to Tags
+// in a ticket's detail panel - see openTicket) with its scheduled slot, plus
+// a CSV export. Reuses GET /tickets?tag=office-hours so the same
+// admin/agent + mailbox-access scoping as the main Tickets page applies
+// here automatically - an agent only sees their own office-hours tickets,
+// same as anywhere else.
+function csvEscape(value) {
+  const s = value == null ? '' : String(value);
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadOfficeHoursCsv(tickets) {
+  const headers = ['Office hours slot', 'Received', 'Mailbox', 'From', 'Subject', 'Assignee', 'Status', 'First response TAT', 'Resolution TAT'];
+  const rows = tickets.map((t) => [
+    t.office_hours_at ? fmtDate(t.office_hours_at) : '',
+    fmtDate(t.first_received_at || t.received_at),
+    t.mailbox_email || '',
+    t.from_address || '',
+    t.subject || '',
+    (state.roster.find((r) => r.id === t.assignee_id) || {}).name || 'Unassigned',
+    t.status,
+    t.tat.first_response.human || '',
+    t.tat.resolution.human || '',
+  ]);
+  const csv = [headers, ...rows].map((row) => row.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `office-hours-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function renderOfficeHours() {
+  const main = el('main');
+  main.insertAdjacentHTML('beforeend', `
+    <div class="section-header">
+      <h2 style="margin:0;">Office Hours</h2>
+      <button class="secondary" id="export-office-hours-btn">Export CSV</button>
+    </div>
+    <p class="small">Tickets with a scheduled office-hours slot, soonest first.</p>
+    <div id="office-hours-table-wrap"><em>Loading...</em></div>
+  `);
+
+  const { tickets } = await api('/tickets?tag=office-hours');
+  // Soonest-scheduled first; any ticket that's tagged but had its slot
+  // cleared (office_hours_at null) sorts to the end instead of erroring.
+  tickets.sort((a, b) => {
+    if (!a.office_hours_at && !b.office_hours_at) return 0;
+    if (!a.office_hours_at) return 1;
+    if (!b.office_hours_at) return -1;
+    return new Date(a.office_hours_at) - new Date(b.office_hours_at);
+  });
+  state.officeHoursTickets = tickets;
+
+  const wrap = el('office-hours-table-wrap');
+  if (tickets.length === 0) {
+    wrap.innerHTML = '<p class="small">No tickets tagged "office-hours" yet.</p>';
+  } else {
+    wrap.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Office hours slot</th>
+            <th>Received</th>
+            <th>Mailbox</th>
+            <th>From</th>
+            <th>Subject</th>
+            <th>Assignee</th>
+            <th>Status</th>
+            <th>TAT</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${tickets.map((t) => `
+            <tr class="ticket-row" data-id="${t.id}">
+              <td>${t.office_hours_at ? escapeHtml(fmtDate(t.office_hours_at)) : '<span class="small">not set</span>'}</td>
+              <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
+              <td>${escapeHtml(t.mailbox_email || '')}</td>
+              <td>${escapeHtml(t.from_address || '')}</td>
+              <td>${escapeHtml(t.subject || '(no subject)')}</td>
+              <td>${escapeHtml((state.roster.find((r) => r.id === t.assignee_id) || {}).name || 'Unassigned')}</td>
+              <td><span class="badge ${t.status}">${escapeHtml(t.status)}</span></td>
+              <td>${escapeHtml(t.tat.first_response.human || '-')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+    wrap.querySelectorAll('.ticket-row').forEach((row) => {
+      row.addEventListener('click', () => openTicket(Number(row.dataset.id)));
+    });
+  }
+
+  el('export-office-hours-btn').addEventListener('click', () => downloadOfficeHoursCsv(state.officeHoursTickets || []));
 }
 
 // ---------- Stats / dashboard ----------
