@@ -344,14 +344,31 @@ function rowHtml(t) {
 // in the plain-text part of an email (literal "**bold**" markers never
 // converted to real bold, and "> " blockquote prefixes) - purely cosmetic
 // cleanup for display, doesn't touch the stored data.
+// Matches the boundary where a message's OWN new text ends and a
+// client-embedded copy of the prior message in the thread begins - e.g.
+// Gmail's "On <date>, <name> wrote:" top-post marker, or a
+// "---------- Forwarded message ---------" block. Because we now store each
+// message as its own row (see ticket_messages table comment in db.js), that
+// trailing embedded copy is already shown as its own separate bubble earlier
+// in the thread - so leaving it in also renders it (and everything below
+// it, in a forward chain) makes the same content appear twice in a row.
+// This only trims for DISPLAY; the raw body stored in the DB is untouched.
+const QUOTE_BOUNDARY_RE = /(^|\n)\s*(On\s.{0,120}?wrote:|-{2,}\s*Forwarded message\s*-{2,})/i;
+
 function cleanBodyForDisplay(text) {
   if (!text) return text;
-  return text
+  let body = text;
+  const boundary = QUOTE_BOUNDARY_RE.exec(body);
+  if (boundary && boundary.index > 0) {
+    body = body.slice(0, boundary.index);
+  }
+  return body
     .split('\n')
     .map((line) => line.replace(/^(\s*>\s?)+/, ''))
     .join('\n')
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '$1');
+    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '$1')
+    .trim();
 }
 
 // Renders the full per-message conversation thread (see the ticket_messages
