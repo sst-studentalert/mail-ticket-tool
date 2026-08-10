@@ -452,12 +452,20 @@ async function openTicket(id) {
           </div>
           <div class="side-field">
             <label>Assignee</label>
-            ${state.user.is_admin ? `
+            ${(() => {
+              // Non-admins can assign within a mailbox they've been
+              // EXPLICITLY granted on the Team page (see full_access column
+              // comment in db.js) - not just because they're unrestricted by
+              // default. Mirrors the backend check in PATCH /:id/assign.
+              const me = state.roster.find((r) => r.id === state.user.id);
+              const canAssign = state.user.is_admin || (me && me.mailbox_ids.includes(ticket.mailbox_id));
+              return canAssign;
+            })() ? `
             <select id="assignee-select">
               <option value="">Unassigned</option>
               ${state.roster.map((r) => `<option value="${r.id}" ${ticket.assignee_id === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
             </select>
-            ` : `<div>${escapeHtml((state.roster.find((r) => r.id === ticket.assignee_id) || {}).name || 'Unassigned')} <span class="small">(only an admin can reassign)</span></div>`}
+            ` : `<div>${escapeHtml((state.roster.find((r) => r.id === ticket.assignee_id) || {}).name || 'Unassigned')} <span class="small">(you need to be granted this mailbox on the Team page to reassign)</span></div>`}
           </div>
           <div class="side-field">
             <label>Tags (comma separated)</label>

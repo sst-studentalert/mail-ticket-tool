@@ -1,7 +1,6 @@
 const express = require('express');
 const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
-const requireAdmin = require('../middleware/requireAdmin');
 const gmailAdapter = require('../services/gmailAdapter');
 const { computeTicketTat } = require('../services/tat');
 const { getAccessibleMailboxIds, getFullAccessMailboxIds, mailboxAllowed } = require('../services/mailboxAccess');
@@ -206,20 +205,27 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
-// PATCH /api/tickets/:id/assign - admin only. Agents can't reassign tickets
-// (including their own), since they only have visibility into their own
-// queue in the first place.
-router.patch('/:id/assign', requireAdmin, async (req, res, next) => {
+// PATCH /api/tickets/:id/assign - admins can assign in any mailbox they
+// have access to; non-admins can only assign within a mailbox they've been
+// EXPLICITLY granted on the Team page (an actual mailbox_access row for
+// them - full_access isn't required, just being granted that mailbox at
+// all). A non-admin who's fully unrestricted (never had any mailbox
+// specifically granted) still can't assign anything - "given access to a
+// mailbox" means an explicit grant, not the unrestricted default.
+router.patch('/:id/assign', async (req, res, next) => {
   try {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
 
-    // Admins are still mailbox-scoped (a separate, additional restriction
-    // from is_admin - see services/mailboxAccess.js): can't act on a ticket
-    // outside their own granted mailboxes.
     const actingUserMailboxes = await getAccessibleMailboxIds(req.user.id);
     if (!mailboxAllowed(actingUserMailboxes, ticket.mailbox_id)) {
       return res.status(403).json({ error: "You don't have access to this ticket's mailbox" });
+    }
+    const canAssign = req.user.is_admin || (actingUserMailboxes !== null && actingUserMailboxes.includes(ticket.mailbox_id));
+    if (!canAssign) {
+      return res.status(403).json({
+        error: 'Only an admin, or someone explicitly granted this mailbox on the Team page, can assign tickets',
+      });
     }
 
     const { assignee_id } = req.body || {};
