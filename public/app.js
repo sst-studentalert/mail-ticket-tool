@@ -459,13 +459,35 @@ async function openTicket(id) {
               // default. Mirrors the backend check in PATCH /:id/assign.
               const me = state.roster.find((r) => r.id === state.user.id);
               const canAssign = state.user.is_admin || (me && me.mailbox_ids.includes(ticket.mailbox_id));
-              return canAssign;
-            })() ? `
-            <select id="assignee-select">
-              <option value="">Unassigned</option>
-              ${state.roster.map((r) => `<option value="${r.id}" ${ticket.assignee_id === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
-            </select>
-            ` : `<div>${escapeHtml((state.roster.find((r) => r.id === ticket.assignee_id) || {}).name || 'Unassigned')} <span class="small">(you need to be granted this mailbox on the Team page to reassign)</span></div>`}
+              if (!canAssign) {
+                return `<div>${escapeHtml((state.roster.find((r) => r.id === ticket.assignee_id) || {}).name || 'Unassigned')} <span class="small">(you need to be granted this mailbox on the Team page to reassign)</span></div>`;
+              }
+              // Only offer people who could actually see this ticket once
+              // assigned: unrestricted (mailbox_ids.length === 0) or
+              // explicitly granted this ticket's mailbox. Assigning to
+              // someone without access would leave the ticket permanently
+              // invisible to its own assignee - the backend already
+              // rejects that combination, this just keeps the dropdown from
+              // offering it in the first place.
+              // Always keep the CURRENT assignee in the list even if they'd
+              // no longer be eligible (e.g. their access was revoked after
+              // being assigned) - otherwise the dropdown would silently
+              // show "Unassigned" as selected while the ticket is still
+              // actually assigned to them underneath.
+              const eligible = state.roster.filter(
+                (r) =>
+                  r.id === ticket.assignee_id ||
+                  r.mailbox_ids.length === 0 ||
+                  r.mailbox_ids.includes(ticket.mailbox_id)
+              );
+              return `
+                <select id="assignee-select">
+                  <option value="">Unassigned</option>
+                  ${eligible.map((r) => `<option value="${r.id}" ${ticket.assignee_id === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
+                </select>
+                ${eligible.length < state.roster.length ? '<div class="small" style="margin-top:4px;">Only showing team members with access to this mailbox.</div>' : ''}
+              `;
+            })()}
           </div>
           <div class="side-field">
             <label>Tags (comma separated)</label>
