@@ -56,22 +56,109 @@ async function recordMessage(ticketId, { gmailMessageId, direction, fromAddress,
   return { inserted: (result.changes || 0) > 0 };
 }
 
+// Pulls bare email addresses out of a raw To/Cc header value (which can look
+// like `"Name" <a@x.com>, b@y.com, "Other" <c@z.com>`).
+function extractEmails(headerValue) {
+  if (!headerValue) return [];
+  const matches = headerValue.match(/[^\s<>,"]+@[^\s<>,"]+/g);
+  return matches ? matches.map((e) => e.toLowerCase()) : [];
+}
+
+// When the SAME email is addressed to multiple of our own mailboxes at once
+// (one in To with others Cc'd, or several of our mailboxes all in To), Gmail
+// delivers a separate copy into each mailbox's own inbox - without this,
+// each copy would spawn its own disconnected ticket (see the module comment
+// below). This picks ONE mailbox to "own" the resulting ticket, regardless
+// of which mailbox's poll happens to process the message first:
+//   1. If exactly one of our connected mailboxes is in the To header, that
+//      one owns it (it's the addressee; the others were just kept in the
+//      loop via Cc).
+//   2. Otherwise (several of our mailboxes are all in To, or none are in To
+//      at all but at least one is Cc'd), studentalert@ owns it by default
+//      if it's one of the matches - it's the primary intake mailbox.
+//   3. Failing that, the lowest-id matching mailbox wins, just for a stable,
+//      deterministic choice.
+// Returns { owner, matched } - matched is every one of our connected
+// mailboxes this message was actually addressed to (To or Cc), so the
+// caller can note "also addressed to: ..." on the ticket.
+function pickOwnerMailbox(message, connectedMailboxes) {
+  const toEmails = extractEmails(message.headers && message.headers.to);
+  const ccEmails = extractEmails(message.headers && message.headers.cc);
+
+  const toMatches = connectedMailboxes.filter((m) => toEmails.includes(m.email.toLowerCase()));
+  const matched = connectedMailboxes.filter(
+    (m) => toEmails.includes(m.email.toLowerCase()) || ccEmails.includes(m.email.toLowerCase())
+  );
+
+  const candidates = toMatches.length ? toMatches : matched;
+  if (candidates.length === 0) return { owner: null, matched };
+  if (candidates.length === 1) return { owner: candidates[0], matched };
+
+  const studentAlert = candidates.find((m) => m.email.toLowerCase().startsWith('studentalert'));
+  const owner = studentAlert || candidates.slice().sort((a, b) => a.id - b.id)[0];
+  return { owner, matched };
+}
+
 // Returns { ticketId, created } - created=true if a new ticket row was
-// inserted, false if an existing thread's ticket was updated in place.
+// inserted, false if an existing thread's ticket was updated in place (or a
+// duplicate copy of an already-ticketed message from a sibling mailbox was
+// merged into the existing ticket instead of spawning a new one).
 async function createTicketFromMessage(mailbox, message) {
   const existingByMessage = await db
     .prepare('SELECT id FROM tickets WHERE gmail_message_id = ?')
     .get(message.providerMessageId);
   if (existingByMessage) return { ticketId: null, created: false }; // already ticketed, skip
 
+  // One email addressed to several of our mailboxes at once (To + Cc, or
+  // several of our addresses all in To) lands as a separate copy in EACH of
+  // those mailboxes' inboxes - each with its own provider message/thread id,
+  // since they're entirely separate Gmail accounts. Without deduping, that
+  // would create one disconnected ticket per mailbox for what's really a
+  // single email. The RFC Message-ID header is the one thing every copy of
+  // the message shares (Gmail assigns each copy its OWN id/thread per
+  // account, but the Message-ID header itself is preserved from the
+  // original send). If some other mailbox's copy already got ticketed, fold
+  // this copy into that same ticket instead of creating a new one.
+  const connectedMailboxes = await db.prepare('SELECT * FROM mailboxes WHERE refresh_token IS NOT NULL').all();
+  const { owner, matched } = pickOwnerMailbox(message, connectedMailboxes);
+
+  if (message.messageIdHeader) {
+    const existingByHeader = await db
+      .prepare('SELECT * FROM tickets WHERE message_id_header = ?')
+      .get(message.messageIdHeader);
+    if (existingByHeader) {
+      await recordMessage(existingByHeader.id, {
+        gmailMessageId: message.providerMessageId,
+        direction: 'inbound',
+        fromAddress: message.from,
+        body: message.bodyText,
+        sentAt: message.receivedAt,
+      });
+      await logEvent(
+        existingByHeader.id,
+        'seen_in_other_mailbox',
+        `Same email also landed in ${mailbox.email} (Cc'd/To'd alongside ${
+          (matched.find((m) => m.id === existingByHeader.mailbox_id) || {}).email || 'the owning mailbox'
+        })`
+      );
+      return { ticketId: existingByHeader.id, created: false };
+    }
+  }
+
+  // File the ticket under the resolved owner, not necessarily whichever
+  // mailbox's poll happened to process it first - falls back to the current
+  // mailbox if header parsing came up empty (e.g. a message with no To/Cc
+  // header at all, which shouldn't normally happen).
+  const owningMailbox = owner || mailbox;
+
   const { isAutomated, reasons } = scoreMessage(message);
 
-  // Is this a follow-up in a thread we've already ticketed (from this same
-  // mailbox)? If so, update that ticket in place rather than creating a
-  // second, disconnected ticket for the same conversation.
+  // Is this a follow-up in a thread we've already ticketed (from the
+  // owning mailbox)? If so, update that ticket in place rather than
+  // creating a second, disconnected ticket for the same conversation.
   const existingThreadTicket = await db
     .prepare('SELECT * FROM tickets WHERE mailbox_id = ? AND gmail_thread_id = ?')
-    .get(mailbox.id, message.providerThreadId);
+    .get(owningMailbox.id, message.providerThreadId);
 
   if (existingThreadTicket) {
     // If the ticket was already sitting in an actionable state (unassigned/
@@ -137,7 +224,7 @@ async function createTicketFromMessage(mailbox, message) {
        RETURNING id`
     )
     .run(
-      mailbox.id,
+      owningMailbox.id,
       message.providerThreadId,
       message.providerMessageId,
       message.messageIdHeader || null,
@@ -158,6 +245,20 @@ async function createTicketFromMessage(mailbox, message) {
     body: message.bodyText,
     sentAt: message.receivedAt,
   });
+
+  // Surface it when this email was addressed to more than one of our
+  // mailboxes at once, so it's clear on the ticket why it landed under
+  // owningMailbox specifically instead of looking like a one-off choice.
+  if (matched.length > 1) {
+    await logEvent(
+      info.lastInsertRowid,
+      'multi_mailbox_address',
+      `Also addressed to: ${matched
+        .filter((m) => m.id !== owningMailbox.id)
+        .map((m) => m.email)
+        .join(', ')}`
+    );
+  }
 
   return { ticketId: info.lastInsertRowid, created: true };
 }
