@@ -56,6 +56,37 @@ async function recordMessage(ticketId, { gmailMessageId, direction, fromAddress,
   return { inserted: (result.changes || 0) > 0 };
 }
 
+// Registers that a given (mailbox, Gmail thread) pair belongs to a ticket -
+// see the ticket_thread_links table comment in db.js. Safe to call
+// repeatedly for the same pair (e.g. every message in an ongoing thread) -
+// the composite primary key makes re-inserts a no-op.
+async function linkThread(ticketId, mailboxId, threadId) {
+  if (!threadId) return;
+  await db
+    .prepare(
+      `INSERT INTO ticket_thread_links (ticket_id, mailbox_id, gmail_thread_id)
+       VALUES (?, ?, ?)
+       ON CONFLICT (mailbox_id, gmail_thread_id) DO NOTHING`
+    )
+    .run(ticketId, mailboxId, threadId);
+}
+
+// Finds the ticket (if any) already linked to this exact (mailbox, thread)
+// pair - see linkThread/ticket_thread_links. This is how a reply sent from
+// a DIFFERENT one of a broadcast's originally-addressed mailboxes still
+// resolves back to the same ticket, instead of only ever matching the one
+// mailbox the ticket happened to be filed under.
+async function findTicketByThreadLink(mailboxId, threadId) {
+  if (!threadId) return null;
+  return db
+    .prepare(
+      `SELECT t.* FROM ticket_thread_links l
+       JOIN tickets t ON t.id = l.ticket_id
+       WHERE l.mailbox_id = ? AND l.gmail_thread_id = ?`
+    )
+    .get(mailboxId, threadId);
+}
+
 // Pulls bare email addresses out of a raw To/Cc header value (which can look
 // like `"Name" <a@x.com>, b@y.com, "Other" <c@z.com>`).
 function extractEmails(headerValue) {
@@ -134,6 +165,12 @@ async function createTicketFromMessage(mailbox, message) {
         body: message.bodyText,
         sentAt: message.receivedAt,
       });
+      // Registers THIS mailbox's own thread id for the conversation too, so
+      // a reply arriving via this mailbox later (inbound OR a Sent-folder
+      // reply picked up by detectExternalReply) still resolves back to the
+      // same ticket, even though the ticket itself is filed under a
+      // different "owning" mailbox.
+      await linkThread(existingByHeader.id, mailbox.id, message.providerThreadId);
       await logEvent(
         existingByHeader.id,
         'seen_in_other_mailbox',
@@ -153,12 +190,11 @@ async function createTicketFromMessage(mailbox, message) {
 
   const { isAutomated, reasons } = scoreMessage(message);
 
-  // Is this a follow-up in a thread we've already ticketed (from the
-  // owning mailbox)? If so, update that ticket in place rather than
-  // creating a second, disconnected ticket for the same conversation.
-  const existingThreadTicket = await db
-    .prepare('SELECT * FROM tickets WHERE mailbox_id = ? AND gmail_thread_id = ?')
-    .get(owningMailbox.id, message.providerThreadId);
+  // Is this a follow-up in a thread we've already ticketed? Looked up via
+  // ticket_thread_links (keyed on THIS mailbox + thread, not the ticket's
+  // owning mailbox) so a follow-up arriving through any of the originally-
+  // addressed mailboxes resolves back to the same ticket.
+  const existingThreadTicket = await findTicketByThreadLink(mailbox.id, message.providerThreadId);
 
   if (existingThreadTicket) {
     // If the ticket was already sitting in an actionable state (unassigned/
@@ -210,6 +246,7 @@ async function createTicketFromMessage(mailbox, message) {
       body: message.bodyText,
       sentAt: message.receivedAt,
     });
+    await linkThread(existingThreadTicket.id, mailbox.id, message.providerThreadId);
 
     return { ticketId: existingThreadTicket.id, created: false };
   }
@@ -245,6 +282,10 @@ async function createTicketFromMessage(mailbox, message) {
     body: message.bodyText,
     sentAt: message.receivedAt,
   });
+  // Links THIS mailbox's thread id (which may not be owningMailbox's, if a
+  // non-owner's copy happened to be processed first) so it, and any future
+  // reply through it, resolves back to this ticket.
+  await linkThread(info.lastInsertRowid, mailbox.id, message.providerThreadId);
 
   // Surface it when this email was addressed to more than one of our
   // mailboxes at once, so it's clear on the ticket why it landed under
@@ -278,10 +319,19 @@ async function createTicketFromMessage(mailbox, message) {
 // 'replied' by the time this runs, so the status-flip part is naturally a
 // no-op for those (no double-processing) - recordMessage's own
 // gmail_message_id dedup keeps the message-recording part a no-op too.
+//
+// Looked up via ticket_thread_links rather than tickets.mailbox_id, so a
+// reply sent from a DIFFERENT one of a broadcast's originally-addressed
+// mailboxes than whichever one the ticket happened to default to (e.g. a
+// mail addressed to studentalert@/career.desk@/disciplinarycommittee@
+// together defaults to studentalert@, but disciplinary committee is the one
+// who actually replies) still gets matched. When that happens, the ticket
+// is transferred to the replying mailbox - the act of replying is a much
+// stronger signal of who's actually handling it than our default guess
+// was, and leaving it filed under the wrong mailbox would also make it
+// invisible to anyone whose access is scoped to just the real owner.
 async function detectExternalReply(mailbox, sentMessage) {
-  const ticket = await db
-    .prepare(`SELECT * FROM tickets WHERE mailbox_id = ? AND gmail_thread_id = ?`)
-    .get(mailbox.id, sentMessage.providerThreadId);
+  const ticket = await findTicketByThreadLink(mailbox.id, sentMessage.providerThreadId);
   if (!ticket) return false;
 
   await recordMessage(ticket.id, {
@@ -291,6 +341,19 @@ async function detectExternalReply(mailbox, sentMessage) {
     body: sentMessage.bodyText,
     sentAt: sentMessage.receivedAt,
   });
+
+  if (ticket.mailbox_id !== mailbox.id) {
+    const previousMailbox = await db.prepare('SELECT email FROM mailboxes WHERE id = ?').get(ticket.mailbox_id);
+    await db
+      .prepare(`UPDATE tickets SET mailbox_id = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(mailbox.id, ticket.id);
+    await logEvent(
+      ticket.id,
+      'mailbox_reassigned',
+      `Moved from ${previousMailbox ? previousMailbox.email : 'a different mailbox'} to ${mailbox.email} - they replied to it directly`
+    );
+    ticket.mailbox_id = mailbox.id;
+  }
 
   if (!['unassigned', 'assigned'].includes(ticket.status)) return false;
 

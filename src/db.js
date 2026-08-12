@@ -208,6 +208,25 @@ async function migrate() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_messages_gmail_id ON ticket_messages(gmail_message_id)
       WHERE gmail_message_id IS NOT NULL;
 
+    -- When one email is addressed to several of our mailboxes at once (see
+    -- pickOwnerMailbox in poller.js), each addressed mailbox has its OWN
+    -- Gmail thread id for what's logically the same conversation - they're
+    -- separate accounts. A ticket only ever has one tickets.gmail_thread_id
+    -- (the owning mailbox's), so without this table, a reply arriving via a
+    -- DIFFERENT one of the originally-addressed mailboxes (e.g. the
+    -- disciplinary committee replying to something that defaulted to
+    -- studentalert@) would never be matched back to the ticket - it'd look
+    -- unrelated. This records every (mailbox, thread) pair that's actually
+    -- part of a given ticket's conversation, so lookups by thread work
+    -- regardless of which addressed mailbox sent/received a given message.
+    CREATE TABLE IF NOT EXISTS ticket_thread_links (
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+      gmail_thread_id TEXT NOT NULL,
+      PRIMARY KEY (mailbox_id, gmail_thread_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ticket_thread_links_ticket ON ticket_thread_links(ticket_id);
+
     -- Belt-and-suspenders for columns added after the tables above already
     -- existed in an earlier version of this schema (harmless no-ops on a
     -- brand new database).
