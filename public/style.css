@@ -164,6 +164,31 @@ tr.ticket-row:hover { background: #f8fafc; }
 
 .reply-actions { display: flex; gap: 8px; margin-top: 8px; }
 
+.reply-recipients { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 6px; }
+.reply-field { flex: 1; min-width: 140px; }
+.reply-field label { margin: 0 0 2px 0; font-size: 12px; }
+.reply-field input { font-size: 13px; padding: 6px 8px; }
+#reply-all-btn { padding: 6px 10px; font-size: 13px; }
+
+.rich-toolbar { display: flex; gap: 4px; margin-top: 10px; }
+.rich-toolbar-btn {
+  background: #eef0f2; color: var(--text); padding: 4px 10px; font-size: 13px; border-radius: 6px;
+}
+.rich-toolbar-btn:hover { background: #e2e5e9; }
+
+.reply-editor {
+  min-height: 110px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-y: auto;
+}
+.reply-editor:empty:before { content: attr(data-placeholder); color: var(--muted); }
+.reply-editor ul { margin: 4px 0 4px 20px; }
+
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .stat-card h3 { margin: 0 0 8px 0; font-size: 15px; }
 

@@ -45,14 +45,28 @@ async function logEvent(ticketId, eventType, detail) {
 // (via the partial unique index), so re-polling the same Gmail message
 // twice - which already happens naturally on every poll cycle - can't
 // create duplicate rows.
-async function recordMessage(ticketId, { gmailMessageId, direction, fromAddress, body, sentAt }) {
+async function recordMessage(
+  ticketId,
+  { gmailMessageId, direction, fromAddress, toAddress, ccAddress, body, bodyHtml, sentAt }
+) {
   const result = await db
     .prepare(
-      `INSERT INTO ticket_messages (ticket_id, gmail_message_id, direction, from_address, body, sent_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO ticket_messages
+        (ticket_id, gmail_message_id, direction, from_address, to_address, cc_address, body, body_html, sent_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (gmail_message_id) WHERE gmail_message_id IS NOT NULL DO NOTHING`
     )
-    .run(ticketId, gmailMessageId || null, direction, fromAddress || null, body || null, sentAt);
+    .run(
+      ticketId,
+      gmailMessageId || null,
+      direction,
+      fromAddress || null,
+      toAddress || null,
+      ccAddress || null,
+      body || null,
+      bodyHtml || null,
+      sentAt
+    );
   return { inserted: (result.changes || 0) > 0 };
 }
 
@@ -162,6 +176,8 @@ async function createTicketFromMessage(mailbox, message) {
         gmailMessageId: message.providerMessageId,
         direction: 'inbound',
         fromAddress: message.from,
+        toAddress: message.headers && message.headers.to,
+        ccAddress: message.headers && message.headers.cc,
         body: message.bodyText,
         sentAt: message.receivedAt,
       });
@@ -243,6 +259,8 @@ async function createTicketFromMessage(mailbox, message) {
       gmailMessageId: message.providerMessageId,
       direction: 'inbound',
       fromAddress: message.from,
+      toAddress: message.headers && message.headers.to,
+      ccAddress: message.headers && message.headers.cc,
       body: message.bodyText,
       sentAt: message.receivedAt,
     });
@@ -279,6 +297,8 @@ async function createTicketFromMessage(mailbox, message) {
     gmailMessageId: message.providerMessageId,
     direction: 'inbound',
     fromAddress: message.from,
+    toAddress: message.headers && message.headers.to,
+    ccAddress: message.headers && message.headers.cc,
     body: message.bodyText,
     sentAt: message.receivedAt,
   });

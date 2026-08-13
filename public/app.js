@@ -178,6 +178,19 @@ function fmtDate(iso) {
   }
 }
 
+// Pulls bare email addresses out of a raw header value like
+// `"Name" <a@x.com>, b@y.com` - mirrors extractEmails in poller.js, used
+// here to prefill Reply All from the original message's To/Cc.
+function extractEmails(headerValue) {
+  if (!headerValue) return [];
+  const matches = headerValue.match(/[^\s<>,"]+@[^\s<>,"]+/g);
+  return matches ? matches.map((e) => e.toLowerCase()) : [];
+}
+
+function extractEmail(headerValue) {
+  return extractEmails(headerValue)[0] || headerValue || '';
+}
+
 // Converts an ISO timestamp to the "YYYY-MM-DDTHH:mm" format a
 // <input type="datetime-local"> expects, in the browser's local timezone -
 // used to prefill the Office hours picker when changing an existing slot.
@@ -384,6 +397,21 @@ function cleanBodyForDisplay(text) {
     .trim();
 }
 
+// Very small allowlist sanitizer for body_html - that column is only ever
+// populated by our OWN rich-text reply editor (see openTicket below), never
+// from inbound mail, so the input is already fairly trusted, but this
+// strips anything that could still execute script (script/style tags,
+// on*="" event handler attributes, javascript: URLs) before it's dropped
+// into the page as raw HTML.
+function sanitizeRichHtml(html) {
+  if (!html) return '';
+  return html
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, '')
+    .replace(/\son\w+="[^"]*"/gi, '')
+    .replace(/\son\w+='[^']*'/gi, '')
+    .replace(/(href|src)\s*=\s*"javascript:[^"]*"/gi, '$1="#"');
+}
+
 // Renders the full per-message conversation thread (see the ticket_messages
 // table comment in db.js) as a chat-style list, oldest first. Falls back to
 // the old single raw-body display for tickets created before this feature
@@ -400,7 +428,11 @@ function renderThread(messages, ticket) {
             <strong>${escapeHtml(m.from_address || (m.direction === 'outbound' ? 'us' : 'them'))}</strong>
             &middot; ${fmtDate(m.sent_at)}
           </div>
-          <div class="thread-message-body">${escapeHtml(cleanBodyForDisplay(m.body) || '(no body)')}</div>
+          <div class="thread-message-body">${
+            m.body_html
+              ? sanitizeRichHtml(m.body_html)
+              : escapeHtml(cleanBodyForDisplay(m.body) || '(no body)')
+          }</div>
         </div>
       `).join('')}
     </div>
@@ -428,7 +460,19 @@ async function openTicket(id) {
           ${renderThread(messages, ticket)}
 
           <label>Reply</label>
-          <textarea id="reply-body" rows="6" placeholder="Type your reply..."></textarea>
+          <div class="reply-recipients">
+            <div class="reply-field"><label>To</label><input id="reply-to" /></div>
+            <div class="reply-field"><label>Cc</label><input id="reply-cc" /></div>
+            <div class="reply-field"><label>Bcc</label><input id="reply-bcc" /></div>
+            <button type="button" class="secondary" id="reply-all-btn">Reply All</button>
+          </div>
+          <div class="rich-toolbar">
+            <button type="button" class="rich-toolbar-btn" data-cmd="bold" title="Bold"><b>B</b></button>
+            <button type="button" class="rich-toolbar-btn" data-cmd="italic" title="Italic"><i>I</i></button>
+            <button type="button" class="rich-toolbar-btn" data-cmd="underline" title="Underline"><u>U</u></button>
+            <button type="button" class="rich-toolbar-btn" data-cmd="insertUnorderedList" title="Bullet list">&bull; List</button>
+          </div>
+          <div id="reply-body-rich" class="reply-editor" contenteditable="true" data-placeholder="Type your reply..."></div>
           <div class="reply-actions">
             <button id="send-reply-btn">Send reply</button>
             <button class="secondary" id="mark-replied-btn">Mark replied externally</button>
@@ -592,11 +636,57 @@ async function openTicket(id) {
     await loadTickets();
   });
 
+  // Reply defaults to just the original sender, same as before. Reply All
+  // pulls in the To/Cc of the LAST inbound message too (see to_address/
+  // cc_address on ticket_messages), minus our own mailbox (no point cc-ing
+  // ourselves) and minus the sender (already in To, avoid a duplicate).
+  // Bcc always starts empty - the original email's own Bcc list is never
+  // visible to us (email/Gmail don't disclose it to anyone but the original
+  // sender), so there's nothing to prefill there; add one manually if needed.
+  const senderEmail = extractEmail(ticket.from_address);
+  el('reply-to').value = senderEmail;
+
+  el('reply-all-btn').addEventListener('click', () => {
+    const lastInbound = [...(messages || [])].reverse().find((m) => m.direction === 'inbound');
+    const ownEmail = (mailbox_email || '').toLowerCase();
+    const originalTo = lastInbound ? extractEmails(lastInbound.to_address) : [];
+    const originalCc = lastInbound ? extractEmails(lastInbound.cc_address) : [];
+
+    const toSet = [senderEmail, ...originalTo].filter((e) => e && e.toLowerCase() !== ownEmail);
+    const to = [...new Set(toSet.map((e) => e.toLowerCase()))];
+    const cc = [...new Set(originalCc.filter((e) => e.toLowerCase() !== ownEmail && !to.includes(e.toLowerCase())))];
+
+    el('reply-to').value = to.join(', ');
+    el('reply-cc').value = cc.join(', ');
+  });
+
+  const richEditor = el('reply-body-rich');
+  document.querySelectorAll('.rich-toolbar-btn').forEach((btn) => {
+    // Keep the caret/selection inside the editor - without this, clicking
+    // the button first steals focus, and execCommand would have nothing to
+    // apply the formatting to.
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
+    btn.addEventListener('click', () => {
+      richEditor.focus();
+      document.execCommand(btn.dataset.cmd, false, null);
+    });
+  });
+
   el('send-reply-btn').addEventListener('click', async () => {
-    const body = el('reply-body').value;
-    if (!body.trim()) return;
+    const bodyHtml = richEditor.innerHTML.trim();
+    const bodyText = richEditor.innerText.trim();
+    if (!bodyText) return;
     try {
-      await api(`/tickets/${id}/reply`, { method: 'POST', body: JSON.stringify({ body }) });
+      await api(`/tickets/${id}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({
+          bodyText,
+          bodyHtml,
+          to: el('reply-to').value,
+          cc: el('reply-cc').value,
+          bcc: el('reply-bcc').value,
+        }),
+      });
       await loadTickets();
       closeTicketModal();
     } catch (err) {

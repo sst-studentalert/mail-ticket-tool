@@ -407,15 +407,30 @@ router.patch('/:id/automated', async (req, res, next) => {
   }
 });
 
+// Splits a comma-separated recipient field from the reply composer into a
+// clean array of addresses, dropping anything blank.
+function splitAddresses(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map((v) => String(v).trim()).filter(Boolean);
+  return String(value)
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
 // POST /api/tickets/:id/reply - send a real reply through Gmail, threaded.
+// Body: { bodyText, bodyHtml, to, cc, bcc }. to/cc/bcc are comma-separated
+// strings (or arrays) of addresses from the Reply/Reply All composer - see
+// public/app.js. `to` defaults to the original sender if omitted, so a bare
+// { bodyText } request still works the way a plain "Reply" always did.
 router.post('/:id/reply', async (req, res, next) => {
   try {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
     if (!(await requireTicketAccess(req, res, ticket))) return;
 
-    const { body } = req.body || {};
-    if (!body || !body.trim()) {
+    const { bodyText, bodyHtml, to, cc, bcc } = req.body || {};
+    if (!bodyText || !bodyText.trim()) {
       return res.status(400).json({ error: 'Reply body is required' });
     }
 
@@ -427,17 +442,28 @@ router.post('/:id/reply', async (req, res, next) => {
     const adapter = PROVIDERS[mailbox.provider];
     if (!adapter) return res.status(500).json({ error: `No adapter for provider ${mailbox.provider}` });
 
-    // Reply-to address: prefer the From header of the original message.
+    // Reply-to address: prefer the From header of the original message,
+    // unless the composer explicitly provided recipients (Reply/Reply All).
     const toMatch = /<([^>]+)>/.exec(ticket.from_address || '');
-    const to = toMatch ? toMatch[1] : ticket.from_address;
+    const defaultTo = toMatch ? toMatch[1] : ticket.from_address;
+    const toList = splitAddresses(to);
+    const ccList = splitAddresses(cc);
+    const bccList = splitAddresses(bcc);
+    if (toList.length === 0 && defaultTo) toList.push(defaultTo);
+    if (toList.length === 0) {
+      return res.status(400).json({ error: 'At least one To recipient is required' });
+    }
 
     try {
       const sent = await adapter.sendReply(mailbox, {
         threadId: ticket.gmail_thread_id,
         messageIdHeader: ticket.message_id_header,
-        to,
+        to: toList,
+        cc: ccList,
+        bcc: bccList,
         subject: ticket.subject,
-        bodyText: body,
+        bodyText,
+        bodyHtml,
       });
 
       await db
@@ -451,7 +477,10 @@ router.post('/:id/reply', async (req, res, next) => {
         gmailMessageId: sent && sent.id,
         direction: 'outbound',
         fromAddress: mailbox.email,
-        body,
+        toAddress: toList.join(', '),
+        ccAddress: ccList.join(', '),
+        body: bodyText,
+        bodyHtml: bodyHtml || null,
         sentAt: new Date().toISOString(),
       });
 

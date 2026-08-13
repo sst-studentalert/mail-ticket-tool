@@ -323,23 +323,56 @@ function encodeHeaderIfNeeded(value) {
 }
 
 // Sends a reply, threaded via In-Reply-To/References + Gmail's threadId.
-async function sendReply(mailboxRow, { threadId, messageIdHeader, to, subject, bodyText }) {
+// to/cc/bcc are arrays of bare email addresses - Cc/Bcc header lines are
+// only added when non-empty, same as composing a normal email (Bcc is
+// stripped from what recipients see by Gmail's own send pipeline, same as
+// it would be for a message composed directly in Gmail; the addresses
+// still receive their copy). When bodyHtml is provided (the rich-text
+// reply editor - bold/italic/underline/bullets), the message is sent as
+// multipart/alternative with both the HTML and a plain-text fallback, so
+// it renders formatted in HTML-capable clients while still degrading
+// gracefully in plain-text-only ones.
+async function sendReply(mailboxRow, { threadId, messageIdHeader, to, cc, bcc, subject, bodyText, bodyHtml }) {
   const gmail = clientFor(mailboxRow);
 
   const replySubject = /^re:/i.test(subject || '') ? subject : `Re: ${subject || ''}`;
+  const toList = Array.isArray(to) ? to : [to].filter(Boolean);
+  const ccList = Array.isArray(cc) ? cc.filter(Boolean) : [];
+  const bccList = Array.isArray(bcc) ? bcc.filter(Boolean) : [];
+
   const lines = [
     `From: ${mailboxRow.email}`,
-    `To: ${to}`,
-    `Subject: ${encodeHeaderIfNeeded(replySubject)}`,
+    `To: ${toList.join(', ')}`,
   ];
+  if (ccList.length) lines.push(`Cc: ${ccList.join(', ')}`);
+  if (bccList.length) lines.push(`Bcc: ${bccList.join(', ')}`);
+  lines.push(`Subject: ${encodeHeaderIfNeeded(replySubject)}`);
   if (messageIdHeader) {
     lines.push(`In-Reply-To: ${messageIdHeader}`);
     lines.push(`References: ${messageIdHeader}`);
   }
   lines.push('MIME-Version: 1.0');
-  lines.push('Content-Type: text/plain; charset="UTF-8"');
-  lines.push('');
-  lines.push(bodyText || '');
+
+  if (bodyHtml) {
+    const boundary = `----=_MailTicketTool_${Date.now()}`;
+    lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    lines.push('');
+    lines.push(`--${boundary}`);
+    lines.push('Content-Type: text/plain; charset="UTF-8"');
+    lines.push('');
+    lines.push(bodyText || '');
+    lines.push('');
+    lines.push(`--${boundary}`);
+    lines.push('Content-Type: text/html; charset="UTF-8"');
+    lines.push('');
+    lines.push(bodyHtml);
+    lines.push('');
+    lines.push(`--${boundary}--`);
+  } else {
+    lines.push('Content-Type: text/plain; charset="UTF-8"');
+    lines.push('');
+    lines.push(bodyText || '');
+  }
 
   const raw = base64url(lines.join('\r\n'));
 

@@ -236,6 +236,16 @@ async function migrate() {
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
     ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS last_sent_internal_date TEXT;
     ALTER TABLE mailbox_access ADD COLUMN IF NOT EXISTS full_access INTEGER NOT NULL DEFAULT 0;
+    -- to_address/cc_address: the raw To/Cc header of an INBOUND message,
+    -- kept so "Reply All" can prefill who else was on the original email -
+    -- not set for outbound messages. body_html: set only for outbound
+    -- messages composed with the rich-text reply editor (bold/italic/
+    -- underline/bullets) - the ticket thread renders this directly instead
+    -- of the escaped plain-text body when present. Both additions support
+    -- the reply composer in public/app.js / routes/tickets.js.
+    ALTER TABLE ticket_messages ADD COLUMN IF NOT EXISTS to_address TEXT;
+    ALTER TABLE ticket_messages ADD COLUMN IF NOT EXISTS cc_address TEXT;
+    ALTER TABLE ticket_messages ADD COLUMN IF NOT EXISTS body_html TEXT;
     -- Set via the "Office hours" quick-add next to Tags in the ticket
     -- detail panel: picking a date/time here both stores it (so it can be
     -- shown/sorted/filtered later) and adds an "office-hours" tag as a
