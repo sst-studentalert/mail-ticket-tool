@@ -817,7 +817,6 @@ async function renderOfficeHours() {
       <table>
         <thead>
           <tr>
-            <th>Office hours slot</th>
             <th>Received</th>
             <th>Mailbox</th>
             <th>From</th>
@@ -830,7 +829,6 @@ async function renderOfficeHours() {
         <tbody>
           ${tickets.map((t) => `
             <tr class="ticket-row" data-id="${t.id}">
-              <td>${t.office_hours_at ? escapeHtml(fmtDate(t.office_hours_at)) : '<span class="small">not set</span>'}</td>
               <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
               <td>${escapeHtml(t.mailbox_email || '')}</td>
               <td>${escapeHtml(t.from_address || '')}</td>
