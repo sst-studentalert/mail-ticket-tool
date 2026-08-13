@@ -412,6 +412,29 @@ function sanitizeRichHtml(html) {
     .replace(/(href|src)\s*=\s*"javascript:[^"]*"/gi, '$1="#"');
 }
 
+// When the same email lands in more than one of our mailboxes at once (see
+// pickOwnerMailbox in poller.js), each mailbox's own copy gets its own row
+// here - same sender, same content, but a different gmail_message_id/
+// to_address per copy. That's correct for the underlying data, but showing
+// each copy as its own bubble looks like a plain duplicate. This collapses
+// consecutive messages with identical content into a single bubble, noting
+// which other mailboxes also received it instead of repeating it.
+function dedupeThreadMessages(messages) {
+  const result = [];
+  for (const m of messages) {
+    const cleaned = (m.body_html || cleanBodyForDisplay(m.body) || '').trim();
+    const last = result[result.length - 1];
+    const lastCleaned = last ? (last.message.body_html || cleanBodyForDisplay(last.message.body) || '').trim() : null;
+    if (last && m.direction === last.message.direction && cleaned && cleaned === lastCleaned) {
+      const alsoTo = extractEmails(m.to_address)[0];
+      if (alsoTo) last.alsoVia.push(alsoTo);
+    } else {
+      result.push({ message: m, alsoVia: [] });
+    }
+  }
+  return result;
+}
+
 // Renders the full per-message conversation thread (see the ticket_messages
 // table comment in db.js) as a chat-style list, oldest first. Falls back to
 // the old single raw-body display for tickets created before this feature
@@ -422,11 +445,12 @@ function renderThread(messages, ticket) {
   }
   return `
     <div class="thread">
-      ${messages.map((m) => `
+      ${dedupeThreadMessages(messages).map(({ message: m, alsoVia }) => `
         <div class="thread-message ${m.direction === 'outbound' ? 'outbound' : 'inbound'}">
           <div class="thread-message-meta small">
             <strong>${escapeHtml(m.from_address || (m.direction === 'outbound' ? 'us' : 'them'))}</strong>
             &middot; ${fmtDate(m.sent_at)}
+            ${alsoVia.length ? `&middot; also delivered to ${alsoVia.map(escapeHtml).join(', ')}` : ''}
           </div>
           <div class="thread-message-body">${
             m.body_html
@@ -453,6 +477,24 @@ async function openTicket(id) {
         ${ticket.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </h2>
       <div class="small">From ${escapeHtml(ticket.from_address)} &middot; first received ${fmtDate(ticket.first_received_at || ticket.received_at)}${ticket.received_at && ticket.first_received_at && ticket.received_at !== ticket.first_received_at ? ' &middot; last activity ' + fmtDate(ticket.received_at) : ''} &middot; via ${escapeHtml(mailbox_email || '')}</div>
+      ${(() => {
+        // Cross-reference every inbound message's To/Cc against our own
+        // connected mailboxes (see pickOwnerMailbox in poller.js) so it's
+        // obvious at a glance - not just buried in History - when this
+        // ticket was actually a broadcast to several of our mailboxes at
+        // once, and which ones besides the one it's filed under.
+        const ownEmails = new Set((state.mailboxes || []).map((m) => m.email.toLowerCase()));
+        const addressed = new Set();
+        (messages || [])
+          .filter((m) => m.direction === 'inbound')
+          .forEach((m) => {
+            [...extractEmails(m.to_address), ...extractEmails(m.cc_address)].forEach((e) => {
+              if (ownEmails.has(e) && e !== (mailbox_email || '').toLowerCase()) addressed.add(e);
+            });
+          });
+        if (addressed.size === 0) return '';
+        return `<div class="info-banner" style="margin-top:8px;">Also addressed to: ${[...addressed].map(escapeHtml).join(', ')}</div>`;
+      })()}
 
       <div class="detail-grid">
         <div>
