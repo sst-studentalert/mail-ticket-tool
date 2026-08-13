@@ -4,34 +4,53 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
+const config = require('../config');
 const requireAuth = require('../middleware/requireAuth');
 const requireAdmin = require('../middleware/requireAdmin');
 const gmailAdapter = require('../services/gmailAdapter');
 
 const router = express.Router();
 
-// Short-lived in-memory state store to protect against CSRF on the OAuth
-// callback. Fine for a single-instance MVP deployment. NOTE: on Vercel,
-// serverless function instances aren't guaranteed to persist this Map
-// between the /start and /callback requests if they land on different
-// instances - if you deploy there and hit "invalid_state" errors on
-// connect, this in-memory store is why; swap it for a short-lived row in
-// Postgres (or a signed, stateless token) if that happens in practice.
-const pendingStates = new Map();
+// The OAuth `state` param protects the callback against CSRF - it has to
+// prove the callback corresponds to a /start call we actually issued.
+// Previously this was tracked in an in-memory Map, which worked locally but
+// broke on Vercel: serverless function instances aren't guaranteed to
+// persist that Map between the /start and /callback requests if they land
+// on different instances (very likely across two separate requests, since
+// each invocation can spin up fresh) - surfacing as "invalid_state" on
+// every connect attempt. Fixed by making state a signed, stateless token
+// instead: it carries its own payload (who started it, when) and an HMAC
+// signature keyed on SESSION_SECRET, so any instance can verify it without
+// needing to have seen the /start request itself.
+function signState(payload) {
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', config.sessionSecret).update(payloadB64).digest('base64url');
+  return `${payloadB64}.${signature}`;
+}
+
+function verifyState(token) {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+  const [payloadB64, signature] = token.split('.');
+  const expected = crypto.createHmac('sha256', config.sessionSecret).update(payloadB64).digest('base64url');
+  // Constant-time comparison to avoid a timing side-channel on the signature check.
+  const sigBuf = Buffer.from(signature || '');
+  const expectedBuf = Buffer.from(expected);
+  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    if (Date.now() - payload.createdAt > 10 * 60 * 1000) return null; // expired (10 min)
+    return payload;
+  } catch {
+    return null;
+  }
+}
 
 // Only admins can connect mailboxes (the callback itself is unauthenticated
 // by necessity - it's Google redirecting the browser back - but it's gated
-// by the one-time `state` token minted here, which we only ever hand out to
+// by the signed `state` token minted here, which we only ever hand out to
 // an admin session).
 router.get('/google/start', requireAuth, requireAdmin, (req, res) => {
-  const state = crypto.randomBytes(16).toString('hex');
-  pendingStates.set(state, { userId: req.user.id, createdAt: Date.now() });
-
-  // Clean up old entries opportunistically.
-  for (const [key, value] of pendingStates) {
-    if (Date.now() - value.createdAt > 10 * 60 * 1000) pendingStates.delete(key);
-  }
-
+  const state = signState({ userId: req.user.id, createdAt: Date.now() });
   const url = gmailAdapter.getAuthUrl(state);
   res.redirect(url);
 });
@@ -42,10 +61,9 @@ router.get('/google/callback', async (req, res) => {
   if (error) {
     return res.redirect(`/index.html?mailbox_error=${encodeURIComponent(String(error))}#mailboxes`);
   }
-  if (!code || !state || !pendingStates.has(String(state))) {
+  if (!code || !verifyState(String(state || ''))) {
     return res.redirect('/index.html?mailbox_error=invalid_state#mailboxes');
   }
-  pendingStates.delete(String(state));
 
   try {
     const { email, refreshToken, accessToken, expiryDate } = await gmailAdapter.handleOAuthCallback(
