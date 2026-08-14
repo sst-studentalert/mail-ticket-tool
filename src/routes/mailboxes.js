@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 const requireAdmin = require('../middleware/requireAdmin');
+const { pollAllMailboxes } = require('../services/poller');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -35,6 +36,21 @@ router.delete('/:id', requireAdmin, async (req, res, next) => {
       .run(id);
 
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Manual "poll now" button for the Mailboxes admin page - runs the exact
+// same pollAllMailboxes() pass the Vercel Cron Job / CRON_SECRET-gated
+// /api/cron/poll endpoint uses, but gated by the normal admin session
+// instead, so there's no need to go find/paste CRON_SECRET into curl just to
+// force an immediate check (e.g. right after connecting a mailbox or
+// resetting a checkpoint).
+router.post('/poll-now', requireAdmin, async (req, res, next) => {
+  try {
+    await pollAllMailboxes();
+    res.json({ ok: true, polledAt: new Date().toISOString() });
   } catch (err) {
     next(err);
   }

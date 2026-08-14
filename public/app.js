@@ -1099,11 +1099,34 @@ async function renderMailboxes() {
   main.insertAdjacentHTML('beforeend', `
     <div class="section-header">
       <h2 style="margin:0;">Connected mailboxes</h2>
-      <a href="/api/oauth/google/start"><button>+ Connect new mailbox</button></a>
+      <div style="display:flex; gap:8px;">
+        <button class="secondary" id="poll-now-btn">Check for new emails now</button>
+        <a href="/api/oauth/google/start"><button>+ Connect new mailbox</button></a>
+      </div>
     </div>
+    <div id="poll-now-status" class="small" style="margin-bottom:8px;"></div>
     <div class="mailbox-list" id="mailbox-list"></div>
     <p class="small">Each mailbox owner should click "Connect new mailbox" themselves and sign in with their own Google account — no password sharing required.</p>
   `);
+
+  el('poll-now-btn').addEventListener('click', async () => {
+    const btn = el('poll-now-btn');
+    const status = el('poll-now-status');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    status.textContent = '';
+    try {
+      await api('/mailboxes/poll-now', { method: 'POST' });
+      status.textContent = `Done — checked all mailboxes at ${fmtDate(new Date().toISOString())}.`;
+      await renderMailboxList();
+      if (state.page === 'tickets') await loadTickets();
+    } catch (err) {
+      status.textContent = `Failed: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Check for new emails now';
+    }
+  });
 
   await renderMailboxList();
 }
