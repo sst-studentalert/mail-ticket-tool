@@ -379,7 +379,15 @@ function rowHtml(t) {
 // in the thread - so leaving it in also renders it (and everything below
 // it, in a forward chain) makes the same content appear twice in a row.
 // This only trims for DISPLAY; the raw body stored in the DB is untouched.
-const QUOTE_BOUNDARY_RE = /(^|\n)\s*(On\s.{0,120}?wrote:|-{2,}\s*Forwarded message\s*-{2,})/i;
+// `[\s\S]` (not `.`) between "On" and "wrote:" is deliberate - Gmail's plain-
+// text export hard-wraps long attribution lines (name + date + email
+// address can easily exceed a line width), inserting a real newline in the
+// middle of "On <date>, <name> wrote:" itself. `.` never matches a newline
+// in JS regex, so a wrapped attribution line silently failed to match here,
+// letting the entire quoted history through repeatedly (each reply's quote
+// growing one message longer) - seen on the disciplinarycommittee@
+// mailbox's tickets. `[\s\S]` matches newlines too, closing that gap.
+const QUOTE_BOUNDARY_RE = /(^|\n)\s*(On\s[\s\S]{0,160}?wrote:|-{2,}\s*Forwarded message\s*-{2,})/i;
 
 function cleanBodyForDisplay(text) {
   if (!text) return text;
@@ -403,13 +411,22 @@ function cleanBodyForDisplay(text) {
 // strips anything that could still execute script (script/style tags,
 // on*="" event handler attributes, javascript: URLs) before it's dropped
 // into the page as raw HTML.
+// Allowlist sanitizer for body_html. Originally this only ever held content
+// from our OWN rich-text reply editor (fully trusted), but inbound messages
+// now populate it too when the sender's email has a real HTML part (see
+// bodyHtml in gmailAdapter.js) - so this strips a bit more than before:
+// script/style tags, inline event handler attributes, javascript: URLs, and
+// now also iframe/object/embed tags and data: URIs in src, since those can
+// come from an external sender we don't control.
 function sanitizeRichHtml(html) {
   if (!html) return '';
   return html
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(script|style|iframe|object|embed)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(iframe|object|embed)[^>]*\/?>/gi, '')
     .replace(/\son\w+="[^"]*"/gi, '')
     .replace(/\son\w+='[^']*'/gi, '')
-    .replace(/(href|src)\s*=\s*"javascript:[^"]*"/gi, '$1="#"');
+    .replace(/(href|src)\s*=\s*"javascript:[^"]*"/gi, '$1="#"')
+    .replace(/(href|src)\s*=\s*"data:[^"]*"/gi, '$1="#"');
 }
 
 // When the same email lands in more than one of our mailboxes at once (see
@@ -439,6 +456,28 @@ function dedupeThreadMessages(messages) {
 // table comment in db.js) as a chat-style list, oldest first. Falls back to
 // the old single raw-body display for tickets created before this feature
 // shipped (no rows in ticket_messages yet).
+// HTML equivalent of cleanBodyForDisplay's QUOTE_BOUNDARY_RE trim, for
+// messages that now carry body_html (see gmailAdapter.js's bodyHtml support,
+// added so HTML-only senders' real content shows instead of a placeholder
+// stub) - without this, the html branch below rendered the ENTIRE raw email
+// including Gmail's own embedded quote-history markup, showing the whole
+// prior conversation again inside every new reply's bubble (already shown
+// separately, and correctly trimmed, in earlier bubbles). Gmail always wraps
+// that embedded quote in a `<div class="gmail_quote...">` container
+// (containing the "On <date> ... wrote:" attribution + a <blockquote> of
+// everything before it), so cutting the HTML at the start of that div drops
+// exactly the redundant part and keeps only this message's own new content.
+function stripHtmlTagsForCheck(html) {
+  return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').trim();
+}
+
+function cleanHtmlForDisplay(html) {
+  if (!html) return html;
+  const idx = html.search(/<div[^>]*class="[^"]*\bgmail_quote\b[^"]*"[^>]*>/i);
+  if (idx > 0) return html.slice(0, idx);
+  return html;
+}
+
 function renderThread(messages, ticket) {
   if (!messages || messages.length === 0) {
     return `<div class="body-box">${escapeHtml(cleanBodyForDisplay(ticket.body || ticket.snippet) || '(no body)')}</div>`;
@@ -453,9 +492,17 @@ function renderThread(messages, ticket) {
             ${alsoVia.length ? `&middot; also delivered to ${alsoVia.map(escapeHtml).join(', ')}` : ''}
           </div>
           <div class="thread-message-body">${
-            m.body_html
-              ? sanitizeRichHtml(m.body_html)
-              : escapeHtml(cleanBodyForDisplay(m.body) || '(no body)')
+            (() => {
+              if (m.body_html) {
+                const trimmed = cleanHtmlForDisplay(m.body_html);
+                // If trimming somehow left nothing usable (e.g. the whole
+                // message WAS the quote, no new content above it), fall back
+                // to the plain-text rendering rather than showing a blank
+                // bubble.
+                if (trimmed && stripHtmlTagsForCheck(trimmed).trim()) return sanitizeRichHtml(trimmed);
+              }
+              return escapeHtml(cleanBodyForDisplay(m.body) || '(no body)');
+            })()
           }</div>
         </div>
       `).join('')}
@@ -466,6 +513,19 @@ function renderThread(messages, ticket) {
 async function openTicket(id) {
   const { ticket, mailbox_email, events, messages } = await api(`/tickets/${id}`);
   state.openTicketId = id;
+
+  // Only relevant for office-hours-tagged tickets (prefills Reply "To" -
+  // see below), so don't bother fetching it otherwise.
+  let officeHoursEmail = null;
+  if (ticket.tags.includes('office-hours')) {
+    try {
+      const { value } = await api('/settings/office_hours_email');
+      officeHoursEmail = value;
+    } catch {
+      // Settings lookup failing shouldn't block opening the ticket - just
+      // fall back to the normal sender-based prefill below.
+    }
+  }
 
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
@@ -578,7 +638,11 @@ async function openTicket(id) {
           <div class="side-field">
             <label>Tags (comma separated)</label>
             <input id="tags-input" value="${escapeHtml(ticket.tags.join(', '))}" />
-            <button class="secondary" id="save-tags-btn" style="margin-top:6px;">Save tags</button>
+            <label style="display:inline-flex; align-items:center; gap:6px; margin:8px 0 0 0; font-size:13px; color:var(--text);">
+              <input type="checkbox" id="office-hours-tag-checkbox" style="width:auto;" ${ticket.tags.includes('office-hours') ? 'checked' : ''} />
+              Office Hours
+            </label>
+            <button class="secondary" id="save-tags-btn" style="margin-top:6px; display:block;">Save tags</button>
           </div>
           <div class="side-field">
             <label>Automated</label>
@@ -622,8 +686,31 @@ async function openTicket(id) {
 
   el('save-tags-btn').addEventListener('click', async () => {
     const tags = el('tags-input').value.split(',').map((t) => t.trim()).filter(Boolean);
+    if (el('office-hours-tag-checkbox').checked && !tags.includes('office-hours')) tags.push('office-hours');
+    if (!el('office-hours-tag-checkbox').checked) {
+      const i = tags.indexOf('office-hours');
+      if (i !== -1) tags.splice(i, 1);
+    }
     await api(`/tickets/${id}/tags`, { method: 'PATCH', body: JSON.stringify({ tags }) });
     await loadTickets();
+    closeTicketModal();
+    openTicket(id);
+  });
+
+  // Quick one-click way to file/unfile this ticket under Office Hours
+  // without having to type the tag by hand - saves immediately rather than
+  // waiting for "Save tags" so toggling it feels instant, same as the other
+  // checkboxes on this panel (Automated).
+  el('office-hours-tag-checkbox').addEventListener('change', async (e) => {
+    const current = el('tags-input').value.split(',').map((t) => t.trim()).filter(Boolean);
+    const has = current.includes('office-hours');
+    let next = current;
+    if (e.target.checked && !has) next = [...current, 'office-hours'];
+    else if (!e.target.checked && has) next = current.filter((t) => t !== 'office-hours');
+    await api(`/tickets/${id}/tags`, { method: 'PATCH', body: JSON.stringify({ tags: next }) });
+    await loadTickets();
+    closeTicketModal();
+    openTicket(id);
   });
 
 
@@ -640,7 +727,13 @@ async function openTicket(id) {
   // visible to us (email/Gmail don't disclose it to anyone but the original
   // sender), so there's nothing to prefill there; add one manually if needed.
   const senderEmail = extractEmail(ticket.from_address);
-  el('reply-to').value = senderEmail;
+  // Office-hours tickets default Reply "To" to the saved office-hours
+  // contact email (see Office Hours tab) instead of the original sender -
+  // for this kind of ticket the reply is usually meant to go to whoever
+  // handles office-hours bookings, not back to the student. Still just a
+  // prefill - editable like any other reply field if this particular ticket
+  // needs to go elsewhere.
+  el('reply-to').value = officeHoursEmail || senderEmail;
 
   el('reply-all-btn').addEventListener('click', () => {
     const lastInbound = [...(messages || [])].reverse().find((m) => m.direction === 'inbound');
@@ -748,9 +841,37 @@ async function renderOfficeHours() {
       <h2 style="margin:0;">Office Hours</h2>
       <button class="secondary" id="export-office-hours-btn">Export CSV</button>
     </div>
-    <p class="small">Tickets with a scheduled office-hours slot, soonest first.</p>
+    <p class="small">Tickets tagged "office-hours".</p>
+    <div class="card" style="max-width:420px; margin-bottom:16px; padding:12px 16px;">
+      <label style="margin-top:0;">Office hours contact email</label>
+      <div class="small" style="margin-bottom:6px;">Used to prefill the Reply "To" field on office-hours tickets.</div>
+      <div style="display:flex; gap:8px;">
+        <input id="office-hours-email-input" placeholder="e.g. counsellor@sst.scaler.com" style="flex:1;" />
+        <button class="secondary" id="save-office-hours-email-btn">Save</button>
+      </div>
+      <div id="office-hours-email-status" class="small" style="margin-top:6px;"></div>
+    </div>
     <div id="office-hours-table-wrap"><em>Loading...</em></div>
   `);
+
+  try {
+    const { value } = await api('/settings/office_hours_email');
+    if (value) el('office-hours-email-input').value = value;
+  } catch {
+    // Non-fatal - just leaves the field blank if the lookup fails.
+  }
+  el('save-office-hours-email-btn').addEventListener('click', async () => {
+    const status = el('office-hours-email-status');
+    try {
+      await api('/settings/office_hours_email', {
+        method: 'PUT',
+        body: JSON.stringify({ value: el('office-hours-email-input').value.trim() }),
+      });
+      status.textContent = 'Saved.';
+    } catch (err) {
+      status.textContent = `Failed: ${err.message}`;
+    }
+  });
 
   const { tickets } = await api('/tickets?tag=office-hours');
   // Soonest-scheduled first; any ticket that's tagged but had its slot

@@ -252,6 +252,16 @@ async function migrate() {
     -- visible label - see PATCH /:id/office-hours in routes/tickets.js.
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS office_hours_at TIMESTAMPTZ;
 
+    -- Tiny generic key/value store for admin-editable settings that don't
+    -- warrant their own table/column - currently just the "office hours"
+    -- contact email shown/edited on the Office Hours tab and used to prefill
+    -- the Reply "To" field on office-hours-tagged tickets (see
+    -- routes/settings.js).
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+
     UPDATE tickets SET first_received_at = received_at WHERE first_received_at IS NULL;
   `);
 }

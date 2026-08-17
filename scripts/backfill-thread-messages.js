@@ -69,7 +69,10 @@ async function main() {
           gmailMessageId: msg.providerMessageId,
           direction: msg.direction,
           fromAddress: msg.from,
+          toAddress: msg.headers && msg.headers.to,
+          ccAddress: msg.headers && msg.headers.cc,
           body: msg.bodyText,
+          bodyHtml: msg.bodyHtml,
           sentAt: msg.receivedAt,
         });
         if (inserted) insertedForTicket += 1;

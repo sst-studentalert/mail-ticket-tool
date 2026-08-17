@@ -22,6 +22,7 @@ const rosterRoutes = require('./routes/roster');
 const statsRoutes = require('./routes/stats');
 const myStatsRoutes = require('./routes/myStats');
 const cronRoutes = require('./routes/cron');
+const settingsRoutes = require('./routes/settings');
 
 let appPromise = null;
 
@@ -87,6 +88,7 @@ async function buildApp() {
   app.use('/api/stats', statsRoutes);
   app.use('/api/my-stats', myStatsRoutes);
   app.use('/api/cron', cronRoutes);
+  app.use('/api/settings', settingsRoutes);
 
   app.use(express.static(path.join(__dirname, '..', 'public')));
 

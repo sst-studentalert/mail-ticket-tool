@@ -179,6 +179,7 @@ async function createTicketFromMessage(mailbox, message) {
         toAddress: message.headers && message.headers.to,
         ccAddress: message.headers && message.headers.cc,
         body: message.bodyText,
+        bodyHtml: message.bodyHtml,
         sentAt: message.receivedAt,
       });
       // Registers THIS mailbox's own thread id for the conversation too, so
@@ -262,6 +263,7 @@ async function createTicketFromMessage(mailbox, message) {
       toAddress: message.headers && message.headers.to,
       ccAddress: message.headers && message.headers.cc,
       body: message.bodyText,
+      bodyHtml: message.bodyHtml,
       sentAt: message.receivedAt,
     });
     await linkThread(existingThreadTicket.id, mailbox.id, message.providerThreadId);
@@ -300,6 +302,7 @@ async function createTicketFromMessage(mailbox, message) {
     toAddress: message.headers && message.headers.to,
     ccAddress: message.headers && message.headers.cc,
     body: message.bodyText,
+    bodyHtml: message.bodyHtml,
     sentAt: message.receivedAt,
   });
   // Links THIS mailbox's thread id (which may not be owningMailbox's, if a
@@ -359,6 +362,7 @@ async function detectExternalReply(mailbox, sentMessage) {
     direction: 'outbound',
     fromAddress: sentMessage.from,
     body: sentMessage.bodyText,
+    bodyHtml: sentMessage.bodyHtml,
     sentAt: sentMessage.receivedAt,
   });
 

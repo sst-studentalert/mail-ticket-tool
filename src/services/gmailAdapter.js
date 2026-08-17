@@ -92,10 +92,17 @@ function headersMap(headers) {
   return map;
 }
 
-// Recursively walk a Gmail message payload to find the best plain-text body.
-// Falls back to stripping HTML tags if only text/html is present.
-function extractBody(payload) {
-  if (!payload) return '';
+// Recursively walk a Gmail message payload and pull out both the text/plain
+// and text/html parts (whichever exist) - unlike the old version of this
+// function, we now keep both rather than discarding the html once a plain-
+// text part is found, because some senders' plain-text part is just a
+// one-line stub like "Please view this email in HTML format." even though
+// the REAL content only exists as HTML (common with corporate mailer
+// templates, e.g. the Disciplinary Committee's pink-slip emails). Blindly
+// preferring text/plain whenever it's non-empty was storing that stub as the
+// entire message body.
+function extractBodyParts(payload) {
+  if (!payload) return { text: '', html: '' };
 
   const decode = (data) => Buffer.from(data, 'base64').toString('utf8');
 
@@ -121,17 +128,35 @@ function extractBody(payload) {
   }
 
   const { text, html } = walk(payload);
-  if (text) return text.trim();
-  if (html) {
-    return html
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-  return '';
+  return { text: text.trim(), html: html.trim() };
+}
+
+function stripHtmlTags(html) {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Matches the handful of common "this email is HTML-only" stub phrases some
+// mail templates put in the plain-text part instead of real content (e.g.
+// "Please view this email in HTML format.", "View this message in a web
+// browser"). When the plain-text part is JUST one of these (nothing else),
+// treat it as if there were no useful plain text at all and fall back to the
+// html part instead.
+const PLACEHOLDER_TEXT_RE = /^(please )?view (this|the) (e-?mail|message)( in (html( format)?|(a |your )?(web )?browser))?\.?$/i;
+
+// Picks the best available plain-text rendering of a message: the real
+// text/plain part, unless it's one of the known placeholder stubs above, in
+// which case the html part (tags stripped) is used instead. Falls back to
+// the placeholder text itself if there's no html to fall back to.
+function bestPlainText(text, html) {
+  if (text && !PLACEHOLDER_TEXT_RE.test(text)) return text;
+  if (html) return stripHtmlTags(html);
+  return text;
 }
 
 function normalizeMessage(gmailMessage) {
@@ -141,6 +166,7 @@ function normalizeMessage(gmailMessage) {
   const messageIdHeader = headerValue(headers, 'Message-Id') || headerValue(headers, 'Message-ID');
   const dateHeader = headerValue(headers, 'Date');
   const internalDateMs = parseInt(gmailMessage.internalDate || '0', 10);
+  const { text, html } = extractBodyParts(gmailMessage.payload);
 
   return {
     providerMessageId: gmailMessage.id,
@@ -149,7 +175,13 @@ function normalizeMessage(gmailMessage) {
     from,
     subject,
     snippet: gmailMessage.snippet || '',
-    bodyText: extractBody(gmailMessage.payload),
+    bodyText: bestPlainText(text, html),
+    // Raw HTML part, if the message has one - stored alongside bodyText so
+    // the ticket thread can render the real formatted email (see
+    // renderThread/sanitizeRichHtml in public/app.js) instead of a stripped-
+    // down text approximation, and so bestPlainText's fallback above has
+    // something to work with for HTML-only senders.
+    bodyHtml: html || null,
     receivedAt: internalDateMs
       ? new Date(internalDateMs).toISOString()
       : dateHeader
