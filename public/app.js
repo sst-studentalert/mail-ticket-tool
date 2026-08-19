@@ -471,11 +471,29 @@ function stripHtmlTagsForCheck(html) {
   return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').trim();
 }
 
+// Uses the browser's own HTML parser (via a detached element) rather than a
+// raw string cut, and removes the gmail_quote element as a proper DOM node.
+// A plain string.slice() at the quote div's start tag looked simpler but was
+// a real bug: Gmail nests the quote INSIDE the outer wrapper div of the new
+// message (`<div dir="ltr">new text<div class="gmail_quote">...</div></div>`),
+// so cutting the string there also chopped off that outer div's closing tag,
+// leaving it unclosed. Because the whole ticket modal is inserted as one
+// HTML blob, that single unclosed tag swallowed every element after it -
+// including the Reply section and the entire sidebar column - into itself,
+// which is why the sidebar rendered below the thread instead of beside it
+// for tickets whose messages happened to hit this. Parsing into a real DOM
+// tree and removing the quote element outright can't leave things unbalanced
+// the way string slicing can.
 function cleanHtmlForDisplay(html) {
   if (!html) return html;
-  const idx = html.search(/<div[^>]*class="[^"]*\bgmail_quote\b[^"]*"[^>]*>/i);
-  if (idx > 0) return html.slice(0, idx);
-  return html;
+  try {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    wrapper.querySelectorAll('.gmail_quote, .gmail_quote_container').forEach((node) => node.remove());
+    return wrapper.innerHTML;
+  } catch {
+    return html;
+  }
 }
 
 function renderThread(messages, ticket) {
@@ -514,16 +532,18 @@ async function openTicket(id) {
   const { ticket, mailbox_email, events, messages } = await api(`/tickets/${id}`);
   state.openTicketId = id;
 
-  // Only relevant for office-hours-tagged tickets (prefills Reply "To" -
-  // see below), so don't bother fetching it otherwise.
-  let officeHoursEmail = null;
+  // Only relevant for office-hours-tagged tickets (prefills the reply BODY
+  // text below, not who it's sent to - reply-to still just follows the
+  // normal sender/thread logic like any other ticket), so don't bother
+  // fetching it otherwise.
+  let officeHoursTemplate = null;
   if (ticket.tags.includes('office-hours')) {
     try {
-      const { value } = await api('/settings/office_hours_email');
-      officeHoursEmail = value;
+      const { value } = await api('/settings/office_hours_template');
+      officeHoursTemplate = value;
     } catch {
       // Settings lookup failing shouldn't block opening the ticket - just
-      // fall back to the normal sender-based prefill below.
+      // leave the reply editor empty like normal.
     }
   }
 
@@ -727,13 +747,7 @@ async function openTicket(id) {
   // visible to us (email/Gmail don't disclose it to anyone but the original
   // sender), so there's nothing to prefill there; add one manually if needed.
   const senderEmail = extractEmail(ticket.from_address);
-  // Office-hours tickets default Reply "To" to the saved office-hours
-  // contact email (see Office Hours tab) instead of the original sender -
-  // for this kind of ticket the reply is usually meant to go to whoever
-  // handles office-hours bookings, not back to the student. Still just a
-  // prefill - editable like any other reply field if this particular ticket
-  // needs to go elsewhere.
-  el('reply-to').value = officeHoursEmail || senderEmail;
+  el('reply-to').value = senderEmail;
 
   el('reply-all-btn').addEventListener('click', () => {
     const lastInbound = [...(messages || [])].reverse().find((m) => m.direction === 'inbound');
@@ -750,6 +764,13 @@ async function openTicket(id) {
   });
 
   const richEditor = el('reply-body-rich');
+  // Office-hours tickets prefill the reply BODY with the saved template text
+  // (see Office Hours tab) - the recipient still follows the normal sender
+  // logic above, this only saves re-typing the same boilerplate message each
+  // time. Still fully editable before sending, same as if typed by hand.
+  if (officeHoursTemplate) {
+    richEditor.innerText = officeHoursTemplate;
+  }
   document.querySelectorAll('.rich-toolbar-btn').forEach((btn) => {
     // Keep the caret/selection inside the editor - without this, clicking
     // the button first steals focus, and execCommand would have nothing to
@@ -842,30 +863,28 @@ async function renderOfficeHours() {
       <button class="secondary" id="export-office-hours-btn">Export CSV</button>
     </div>
     <p class="small">Tickets tagged "office-hours".</p>
-    <div class="card" style="max-width:420px; margin-bottom:16px; padding:12px 16px;">
-      <label style="margin-top:0;">Office hours contact email</label>
-      <div class="small" style="margin-bottom:6px;">Used to prefill the Reply "To" field on office-hours tickets.</div>
-      <div style="display:flex; gap:8px;">
-        <input id="office-hours-email-input" placeholder="e.g. counsellor@sst.scaler.com" style="flex:1;" />
-        <button class="secondary" id="save-office-hours-email-btn">Save</button>
-      </div>
-      <div id="office-hours-email-status" class="small" style="margin-top:6px;"></div>
+    <div class="card" style="max-width:480px; margin-bottom:16px; padding:12px 16px;">
+      <label style="margin-top:0;">Office hours reply template</label>
+      <div class="small" style="margin-bottom:6px;">Prefills the reply message body (not the recipient) when you open an office-hours ticket - still fully editable before sending. Change it here whenever the wording needs to change.</div>
+      <textarea id="office-hours-template-input" rows="4" placeholder="e.g. Thanks for reaching out - please pick a slot here: ..."></textarea>
+      <button class="secondary" id="save-office-hours-template-btn" style="margin-top:6px;">Save</button>
+      <div id="office-hours-template-status" class="small" style="margin-top:6px;"></div>
     </div>
     <div id="office-hours-table-wrap"><em>Loading...</em></div>
   `);
 
   try {
-    const { value } = await api('/settings/office_hours_email');
-    if (value) el('office-hours-email-input').value = value;
+    const { value } = await api('/settings/office_hours_template');
+    if (value) el('office-hours-template-input').value = value;
   } catch {
     // Non-fatal - just leaves the field blank if the lookup fails.
   }
-  el('save-office-hours-email-btn').addEventListener('click', async () => {
-    const status = el('office-hours-email-status');
+  el('save-office-hours-template-btn').addEventListener('click', async () => {
+    const status = el('office-hours-template-status');
     try {
-      await api('/settings/office_hours_email', {
+      await api('/settings/office_hours_template', {
         method: 'PUT',
-        body: JSON.stringify({ value: el('office-hours-email-input').value.trim() }),
+        body: JSON.stringify({ value: el('office-hours-template-input').value }),
       });
       status.textContent = 'Saved.';
     } catch (err) {
