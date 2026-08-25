@@ -1039,9 +1039,18 @@ async function renderStatsData() {
     </div>
     <h3 style="margin-top:24px;">Tickets per mailbox (non-automated)</h3>
     <table>
-      <thead><tr><th>Mailbox</th><th>Count</th></tr></thead>
+      <thead><tr><th>Mailbox</th><th>Unassigned</th><th>Assigned</th><th>Replied</th><th>Closed</th><th>Total</th></tr></thead>
       <tbody>
-        ${data.per_mailbox.map((m) => `<tr><td>${escapeHtml(m.email)}</td><td>${m.c}</td></tr>`).join('')}
+        ${data.per_mailbox.map((m) => `
+          <tr>
+            <td>${escapeHtml(m.email)}</td>
+            <td>${m.unassigned}</td>
+            <td>${m.assigned}</td>
+            <td>${m.replied}</td>
+            <td>${m.closed}</td>
+            <td><strong>${m.c}</strong></td>
+          </tr>
+        `).join('')}
       </tbody>
     </table>
   `;

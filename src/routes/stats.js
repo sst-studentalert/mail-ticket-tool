@@ -153,15 +153,22 @@ router.get('/', async (req, res, next) => {
         ? 'WHERE 1 = 0'
         : 'WHERE m.id = ANY(?)';
     const mailboxListParams = accessibleMailboxIds && accessibleMailboxIds.length ? [accessibleMailboxIds] : [];
+    // Per-status breakdown alongside the total, so unassigned + assigned +
+    // replied + closed always sums to c (both computed with the exact same
+    // is_automated/date-range filters, so they can't drift apart).
     const perMailbox = await db
       .prepare(
         `SELECT m.email,
-                (SELECT COUNT(*) FROM tickets t WHERE t.mailbox_id = m.id AND t.is_automated = 0 ${dateSql}) AS c
+                (SELECT COUNT(*) FROM tickets t WHERE t.mailbox_id = m.id AND t.is_automated = 0 ${dateSql}) AS c,
+                (SELECT COUNT(*) FROM tickets t WHERE t.mailbox_id = m.id AND t.is_automated = 0 AND t.status = 'unassigned' ${dateSql}) AS unassigned,
+                (SELECT COUNT(*) FROM tickets t WHERE t.mailbox_id = m.id AND t.is_automated = 0 AND t.status = 'assigned' ${dateSql}) AS assigned,
+                (SELECT COUNT(*) FROM tickets t WHERE t.mailbox_id = m.id AND t.is_automated = 0 AND t.status = 'replied' ${dateSql}) AS replied,
+                (SELECT COUNT(*) FROM tickets t WHERE t.mailbox_id = m.id AND t.is_automated = 0 AND t.status = 'closed' ${dateSql}) AS closed
          FROM mailboxes m
          ${mailboxListSql}
          ORDER BY m.email`
       )
-      .all(...dateParams, ...mailboxListParams);
+      .all(...dateParams, ...dateParams, ...dateParams, ...dateParams, ...dateParams, ...mailboxListParams);
 
     const overallTat = {
       first_response: await tatFor(FIRST_RESPONSE_EXPR, '', []),
