@@ -5,6 +5,47 @@ const { google } = require('googleapis');
 const config = require('../config');
 const db = require('../db');
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// True for Gmail API rate-limit / quota errors specifically (as opposed to
+// auth failures, network errors, etc.) - these are transient and expected to
+// clear on their own within seconds to a minute, unlike e.g. invalid_grant.
+function isQuotaError(err) {
+  const msg = (err && err.message) || '';
+  return (
+    err && (err.code === 429 || (err.response && err.response.status === 429)) ||
+    /quota exceeded/i.test(msg) ||
+    /rate limit exceeded/i.test(msg) ||
+    /userRateLimitExceeded/i.test(msg)
+  );
+}
+
+// Wraps a Gmail API call with retry-on-quota-error backoff. A single busy
+// mailbox (e.g. studentalert@, which can have 60+ new messages in one poll
+// pass) fetching each message individually with no pacing can burst past
+// Gmail's per-user "units per minute" rate limit well before it comes
+// anywhere near a daily/project-wide quota - this hits fast, self-clears
+// fast, and unlike an actual auth failure shouldn't be treated as "this
+// mailbox's connection is broken" (see the quota-error handling in
+// poller.js's pollMailbox, which leaves mailbox status alone for these
+// instead of flipping it to 'error').
+async function withQuotaRetry(fn, { retries = 4, baseDelayMs = 2000 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isQuotaError(err) || attempt === retries) throw err;
+      // Exponential backoff: 2s, 4s, 8s, 16s.
+      await sleep(baseDelayMs * Math.pow(2, attempt));
+    }
+  }
+  throw lastErr;
+}
+
 function newOAuthClient() {
   return new google.auth.OAuth2(
     config.googleClientId,
@@ -194,11 +235,13 @@ function normalizeMessage(gmailMessage) {
 
 async function getMessage(mailboxRow, providerMessageId) {
   const gmail = clientFor(mailboxRow);
-  const { data } = await gmail.users.messages.get({
-    userId: 'me',
-    id: providerMessageId,
-    format: 'full',
-  });
+  const { data } = await withQuotaRetry(() =>
+    gmail.users.messages.get({
+      userId: 'me',
+      id: providerMessageId,
+      format: 'full',
+    })
+  );
   return normalizeMessage(data);
 }
 
@@ -241,6 +284,14 @@ async function listNewMessages(mailboxRow) {
     if (data.messages) {
       rawCount += data.messages.length;
       for (const m of data.messages) {
+        // Small pacing delay between per-message fetches - a mailbox with a
+        // large backlog (e.g. 60+ candidates in one poll pass) fetching each
+        // one back-to-back with zero delay is what tripped Gmail's per-user
+        // "units per minute" rate limit in the first place (see
+        // withQuotaRetry above). This keeps normal-sized batches just as
+        // fast as before (most mailboxes have a handful of messages per
+        // poll) while smoothing out the rare large one.
+        if (rawCount > 20) await sleep(150);
         const full = await getMessage(mailboxRow, m.id);
         const internalDateMs = parseInt(full.internalDate || '0', 10);
         const lastSeenMs = parseInt(mailboxRow.last_internal_date || '0', 10);
@@ -296,6 +347,14 @@ async function listSentMessages(mailboxRow) {
     if (data.messages) {
       rawCount += data.messages.length;
       for (const m of data.messages) {
+        // Small pacing delay between per-message fetches - a mailbox with a
+        // large backlog (e.g. 60+ candidates in one poll pass) fetching each
+        // one back-to-back with zero delay is what tripped Gmail's per-user
+        // "units per minute" rate limit in the first place (see
+        // withQuotaRetry above). This keeps normal-sized batches just as
+        // fast as before (most mailboxes have a handful of messages per
+        // poll) while smoothing out the rare large one.
+        if (rawCount > 20) await sleep(150);
         const full = await getMessage(mailboxRow, m.id);
         const internalDateMs = parseInt(full.internalDate || '0', 10);
         const lastSeenMs = parseInt(mailboxRow.last_sent_internal_date || '0', 10);
@@ -427,4 +486,5 @@ module.exports = {
   getMessage,
   getThreadMessages,
   sendReply,
+  isQuotaError,
 };

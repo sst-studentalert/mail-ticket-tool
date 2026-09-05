@@ -463,9 +463,20 @@ async function pollMailbox(mailbox) {
     }
   } catch (err) {
     console.error(`[poller] Failed to poll mailbox ${mailbox.email}:`, err.message);
-    await db
-      .prepare(`UPDATE mailboxes SET status = 'error', updated_at = datetime('now') WHERE id = ?`)
-      .run(mailbox.id);
+    // A Gmail API rate-limit/quota error (see withQuotaRetry in
+    // gmailAdapter.js - this is the case where retrying didn't clear it
+    // within a few backoff attempts) is transient and unrelated to whether
+    // the mailbox's OAuth connection is actually healthy - a busy mailbox
+    // like studentalert@ can trip Gmail's per-user "units per minute" limit
+    // purely from having a large backlog in one poll pass. Flipping status
+    // to 'error' here was misleading (looks like "reconnect this mailbox",
+    // when the real fix is just "wait for the next poll cycle") - leave
+    // status untouched for these instead, and let it self-recover.
+    if (!gmailAdapter.isQuotaError(err)) {
+      await db
+        .prepare(`UPDATE mailboxes SET status = 'error', updated_at = datetime('now') WHERE id = ?`)
+        .run(mailbox.id);
+    }
   }
 }
 
