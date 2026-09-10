@@ -10,6 +10,9 @@ const state = {
   filters: { mailbox_id: '', assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
   statsFilters: { from_date: '', to_date: '', mailbox_ids: null },
   myStatsFilters: { from_date: '', to_date: '' },
+  personId: null,
+  showOverdue: false,
+  statsRange: 'month',
   page: 'tickets',
   openTicketId: null,
 };
@@ -155,7 +158,7 @@ function renderApp() {
   const mainHtml = banner.join('');
   el('main').innerHTML = mainHtml;
 
-  if (state.page === 'stats') renderStats();
+ if (state.page === 'stats') { state.personId ? renderPerson(state.personId) : renderStats(); }
   else if (state.page === 'mystats') renderMyStats();
   else if (state.page === 'mailboxes') renderMailboxes();
   else if (state.page === 'roster') renderRoster();
@@ -945,47 +948,415 @@ async function renderOfficeHours() {
 
 // ---------- Stats / dashboard ----------
 
+// ===================================================================
+// Dashboard + person drilldown — for public/app.js
+//
+// Replaces these three existing functions:
+//     renderStats()
+//     applyStatsFiltersAndReload()
+//     renderStatsData()
+// Delete those, paste this block in their place. renderMailboxPicker
+// stays as it is.
+//
+// Also change the statsFilters line near the top of the file to:
+//   statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, unit: '#' },
+// ===================================================================
+
+// Presets set the range AND the grouping together, so the period table
+// never ends up with 400 rows or 1. Ranges are computed client-side; the
+// server only ever sees plain from_date/to_date.
+const RANGES = {
+  today: { label: 'Today', days: 0, group: 'day' },
+  week: { label: 'This week', days: 7, group: 'day' },
+  month: { label: 'This month', days: 30, group: 'week' },
+  quarter: { label: 'This quarter', days: 90, group: 'week' },
+  custom: { label: 'Custom', days: null, group: 'week' },
+};
+
+// Turnaround targets, in hours. Drive the amber/red dots in the table.
+// Move to app_settings when different mailboxes need different numbers.
+const FIRST_REPLY_TARGET_H = 24;
+const RESOLUTION_TARGET_H = 72;
+
+function isoDaysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function resolvedRange() {
+  const f = state.statsFilters;
+  if (f.preset === 'custom') {
+    return { from: f.from_date, to: f.to_date, group: RANGES.custom.group };
+  }
+  const r = RANGES[f.preset] || RANGES.month;
+  return { from: isoDaysAgo(r.days), to: '', group: r.group };
+}
+
+function statsParams() {
+  const { from, to } = resolvedRange();
+  const p = new URLSearchParams();
+  if (from) p.set('from_date', from);
+  if (to) p.set('to_date', to);
+  // Not a truthiness check: [] is truthy in JS, and an empty selection must
+  // still be sent so the server shows zeros instead of silently defaulting.
+  if (state.statsFilters.mailbox_ids !== null) {
+    p.set('mailboxIds', state.statsFilters.mailbox_ids.join(','));
+  }
+  return p;
+}
+
+function rangeRowHtml(idPrefix) {
+  const f = state.statsFilters;
+  return `
+    <div class="range-row">
+      ${Object.entries(RANGES).map(([k, r]) => `
+        <button class="range-pill ${f.preset === k ? 'on' : ''}" data-preset="${k}">${r.label}</button>
+      `).join('')}
+      ${f.preset === 'custom' ? `
+        <span class="range-dates">
+          <input type="date" id="${idPrefix}-from" value="${escapeHtml(f.from_date)}" />
+          <span class="small">to</span>
+          <input type="date" id="${idPrefix}-to" value="${escapeHtml(f.to_date)}" />
+        </span>` : ''}
+      <div id="${idPrefix}-mailboxes" style="position:relative; margin-left:auto;"></div>
+    </div>`;
+}
+
+function wireRangeRow(idPrefix, reload) {
+  document.querySelectorAll(`.range-pill[data-preset]`).forEach((b) => {
+    b.addEventListener('click', () => {
+      state.statsFilters = { ...state.statsFilters, preset: b.dataset.preset };
+      reload();
+    });
+  });
+  const from = el(`${idPrefix}-from`);
+  const to = el(`${idPrefix}-to`);
+  if (from) from.addEventListener('change', () => {
+    state.statsFilters = { ...state.statsFilters, from_date: from.value };
+    reload();
+  });
+  if (to) to.addEventListener('change', () => {
+    state.statsFilters = { ...state.statsFilters, to_date: to.value };
+    reload();
+  });
+}
+
+// Two letters beat a photo here: no upload, no maintenance, and it gives the
+// eye an anchor per row so scanning eight similar-length names is fast.
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+// Colour alone must never carry the meaning, so the dot always sits beside a
+// value that is itself tinted - two signals, not one.
+function tatCell(tat, targetHours) {
+  if (!tat || tat.avg_seconds == null) return '<td class="nil">—</td>';
+  const hrs = tat.avg_seconds / 3600;
+  const cls = hrs >= targetHours ? 'bad' : hrs >= targetHours * 0.6 ? 'warn' : '';
+  return `<td class="${cls}"><span class="dot ${cls || 'ok'}"></span>${escapeHtml(tat.avg_human)}</td>`;
+}
+
+// ------------------------------------------------------------------ dashboard
+
 async function renderStats() {
   const main = el('main');
-  main.insertAdjacentHTML('beforeend', `
-    <div class="section-header">
-      <h2 style="margin:0;">Dashboard</h2>
-    </div>
-    <div class="filters">
-      <div>
-        <label>From date</label>
-        <input type="date" id="s-from" value="${escapeHtml(state.statsFilters.from_date)}" />
-      </div>
-      <div>
-        <label>To date</label>
-        <input type="date" id="s-to" value="${escapeHtml(state.statsFilters.to_date)}" />
-      </div>
-      <div id="s-mailboxes"></div>
-      <div class="clear-row">
-        <button class="secondary" id="s-clear">Clear dates</button>
-      </div>
-    </div>
-    <div id="stats-wrap"><em>Loading...</em></div>
-  `);
-
-  el('s-from').addEventListener('change', applyStatsFiltersAndReload);
-  el('s-to').addEventListener('change', applyStatsFiltersAndReload);
-  el('s-clear').addEventListener('click', () => {
-        state.statsFilters = { from_date: '', to_date: '', mailbox_ids: null };
-    renderStatsData();
-    el('s-from').value = '';
-    el('s-to').value = '';
-  });
-
+  main.insertAdjacentHTML('beforeend', `<div id="dash-root"><em class="small">Loading…</em></div>`);
   await renderStatsData();
 }
 
-function applyStatsFiltersAndReload() {
-  state.statsFilters = {
-    from_date: el('s-from').value,
-    to_date: el('s-to').value,
+async function renderStatsData() {
+  const root = el('dash-root');
+  const data = await api(`/stats?${statsParams().toString()}`);
+  const unit = state.statsFilters.unit || '#';
+
+  // Row percentages: of THIS person's tickets, how many are in each status.
+  // Answers "is this person keeping up". For workload share instead, divide
+  // by the team total rather than the row total on the next line.
+  const cell = (n, rowTotal) => {
+    if (unit === '%' && rowTotal > 0) return `${Math.round((n / rowTotal) * 100)}%`;
+    return n;
   };
+
+  const people = data.per_assignee.filter((p) => p.counts.total > 0);
+  const maxTotal = people.reduce((m, p) => Math.max(m, p.counts.total), 0);
+  const teamTotals = people.reduce((acc, p) => {
+    ['assigned', 'replied', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k]; });
+    return acc;
+  }, { assigned: 0, replied: 0, closed: 0, total: 0 });
+
+  root.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h2 style="margin:0;">Dashboard</h2>
+        <p class="meta">${data.total_tickets} tickets · ${data.automated_excluded_total} automated excluded${
+          data.mailbox_filter && data.mailbox_filter.excluded.length
+            ? ` · excluding ${data.mailbox_filter.excluded.map(escapeHtml).join(', ')}` : ''
+        }</p>
+      </div>
+      <div class="unit-toggle">
+        <span class="${unit === '#' ? 'on' : ''}" data-unit="#">#</span>
+        <span class="${unit === '%' ? 'on' : ''}" data-unit="%">%</span>
+      </div>
+    </div>
+
+    ${rangeRowHtml('s')}
+
+    <div class="tiles">
+      <div class="tile"><p class="k">Tickets in range</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>
+      <div class="tile"><p class="k">Awaiting first reply</p><p class="v">${teamTotals.assigned + data.unassigned.total}</p></div>
+      <div class="tile"><p class="k">1st response</p><p class="v">${
+        data.tat.first_response.avg_human || '—'}</p><p class="c">n = ${data.tat.first_response.sample_size}</p></div>
+      <div class="tile"><p class="k">Resolution</p><p class="v">${
+        data.tat.resolution.avg_human || '—'}</p><p class="c">n = ${data.tat.resolution.sample_size}</p></div>
+    </div>
+
+    <div class="dash-card">
+      <table class="dash">
+        <thead><tr>
+          <th>Person</th><th>Assigned</th><th>Replied</th><th>Closed</th>
+          <th>Total</th><th>1st response</th><th>Resolution</th>
+        </tr></thead>
+        <tbody>
+          ${people.map((p) => `
+            <tr class="link-row" data-member="${p.member.id}">
+              <td class="name">
+                <span class="who">
+                  <span class="avatar">${initials(p.member.name)}</span>
+                  <span>${escapeHtml(p.member.name)}</span>
+                </span>
+              </td>
+              <td>${cell(p.counts.assigned, p.counts.total)}</td>
+              <td>${cell(p.counts.replied, p.counts.total)}</td>
+              <td>${cell(p.counts.closed, p.counts.total)}</td>
+              <td class="strong">
+                ${p.counts.total}
+                <span class="share"><span style="width:${maxTotal ? Math.round((p.counts.total / maxTotal) * 100) : 0}%"></span></span>
+              </td>
+              ${tatCell(p.tat.first_response, FIRST_REPLY_TARGET_H)}
+              ${tatCell(p.tat.resolution, RESOLUTION_TARGET_H)}
+            </tr>`).join('')}
+          <tr class="queue-row">
+            <td><span class="who"><span class="avatar queue">!</span><span>Unassigned queue</span></span></td>
+            <td class="nil">—</td><td class="nil">—</td><td class="nil">—</td>
+            <td class="strong">${data.unassigned.total}</td>
+            <td class="nil">—</td><td class="nil">—</td>
+          </tr>
+        </tbody>
+        <tfoot><tr>
+          <td><span class="who"><span class="avatar blank"></span><span>Team total</span></span></td>
+          <td>${cell(teamTotals.assigned, teamTotals.total)}</td>
+          <td>${cell(teamTotals.replied, teamTotals.total)}</td>
+          <td>${cell(teamTotals.closed, teamTotals.total)}</td>
+          <td>${teamTotals.total}</td>
+          <td>${data.tat.first_response.avg_human || '—'}</td>
+          <td>${data.tat.resolution.avg_human || '—'}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+    <p class="small">Click a name for their history.</p>`;
+
+  wireRangeRow('s', renderStatsData);
+  root.querySelectorAll('.unit-toggle span[data-unit]').forEach((s) => {
+    s.addEventListener('click', () => {
+      state.statsFilters = { ...state.statsFilters, unit: s.dataset.unit };
+      renderStatsData();
+    });
+  });
+  root.querySelectorAll('tr.link-row[data-member]').forEach((tr) => {
+    tr.addEventListener('click', () => renderPerson(parseInt(tr.dataset.member, 10)));
+  });
+  renderMailboxPicker('s-mailboxes', data.mailbox_filter, (ids) => {
+    state.statsFilters = { ...state.statsFilters, mailbox_ids: ids };
+    renderStatsData();
+  });
+}
+
+// ------------------------------------------------------------------ person
+
+async function renderPerson(memberId) {
+  state.personId = memberId;
+  state.showOverdue = false;
+  await renderPersonData();
+}
+
+async function renderPersonData() {
+  const root = el('dash-root');
+  root.innerHTML = '<em class="small">Loading…</em>';
+  const { group } = resolvedRange();
+  const p = statsParams();
+  p.set('group', group);
+  const d = await api(`/stats/person/${state.personId}?${p.toString()}`);
+
+  const worse = (mine, avg, lowerIsBetter) => {
+    if (mine == null || avg == null) return '';
+    return (lowerIsBetter ? mine > avg : mine < avg) ? ' worse' : '';
+  };
+  const fr = d.totals.first_response.avg_seconds;
+  const frAvg = d.team_avg.first_response.avg_seconds;
+  const res = d.totals.resolution.avg_seconds;
+  const resAvg = d.team_avg.resolution.avg_seconds;
+  const bucketLabel = { day: 'Day', week: 'Week of', month: 'Month' }[d.group] || 'Period';
+
+  root.innerHTML = `
+    <button class="back-link" id="p-back">← Back to dashboard</button>
+
+    <div class="person-head">
+      <span class="avatar lg">${initials(d.member.name)}</span>
+      <div>
+        <h2 style="margin:0;">${escapeHtml(d.member.name)}</h2>
+        <p class="meta">${escapeHtml(d.member.email)} · ${d.totals.open + d.totals.closed} tickets in range</p>
+      </div>
+    </div>
+
+    ${d.overdue_tickets.length ? `
+      <div class="ribbon">
+        <span class="msg">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>
+          </svg>
+          ${d.overdue_tickets.length} ticket${d.overdue_tickets.length > 1 ? 's' : ''} open longer than
+          ${d.overdue_hours} hours — oldest is ${Math.round(d.overdue_tickets[0].waiting_hours / 24)} days
+        </span>
+        <button class="link" id="p-toggle">${state.showOverdue ? 'Hide' : 'View them'}</button>
+      </div>` : `
+      <p class="all-clear">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        Nothing open beyond ${d.overdue_hours} hours
+      </p>`}
+
+    ${state.showOverdue && d.overdue_tickets.length ? `
+      <div class="dash-card">
+        <table class="dash">
+          <thead><tr><th>Subject</th><th>Mailbox</th><th>Status</th><th>Waiting</th></tr></thead>
+          <tbody>
+            ${d.overdue_tickets.map((t) => `
+              <tr class="overdue">
+                <td>${escapeHtml(t.subject || '(no subject)')}</td>
+                <td>${escapeHtml(t.mailbox.split('@')[0])}</td>
+                <td><span class="badge ${t.status}">${t.status}</span></td>
+                <td class="alert">${t.waiting_hours >= 48
+                  ? `${Math.round(t.waiting_hours / 24)}d` : `${t.waiting_hours}h`}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : ''}
+
+    ${rangeRowHtml('p')}
+
+    <div class="tiles">
+      <div class="tile"><p class="k">Open now</p><p class="v">${d.totals.open}</p>
+        <p class="c${worse(d.totals.open, d.team_avg.open, true)}">team avg ${d.team_avg.open}</p></div>
+      <div class="tile"><p class="k">Closed</p><p class="v">${d.totals.closed}</p>
+        <p class="c">team avg ${d.team_avg.closed}</p></div>
+      <div class="tile"><p class="k">1st response</p><p class="v">${d.totals.first_response.avg_human || '—'}</p>
+        <p class="c${worse(fr, frAvg, true)}">team avg ${d.team_avg.first_response.avg_human || '—'}</p></div>
+      <div class="tile"><p class="k">Resolution</p><p class="v">${d.totals.resolution.avg_human || '—'}</p>
+        <p class="c${worse(res, resAvg, true)}">team avg ${d.team_avg.resolution.avg_human || '—'}</p></div>
+    </div>
+
+    <div class="dash-card">
+      <table class="dash">
+        <thead><tr>
+          <th>${bucketLabel}</th><th>Received</th><th>Replied</th><th>Closed</th>
+          <th>1st response</th><th>Resolution</th>
+        </tr></thead>
+        <tbody>
+          ${d.periods.length ? d.periods.slice().reverse().map((r) => `
+            <tr>
+              <td>${r.bucket}</td>
+              <td>${r.received}</td><td>${r.replied}</td><td>${r.closed}</td>
+              <td>${r.first_response_human || '—'}</td>
+              <td>${r.resolution_human || '—'}</td>
+            </tr>`).join('')
+            : `<tr><td colspan="6" class="nil">No tickets in this range.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="dash-card" style="padding:16px;">
+      <div class="chart-head">
+        <p style="font-size:14px; font-weight:500; margin:0;">Volume and response time</p>
+        <span class="chart-legend">
+          <span><span style="display:inline-block; width:9px; height:9px; background:var(--brand-line); border-radius:2px; margin-right:5px;"></span>received</span>
+          <span><span style="display:inline-block; width:9px; height:2px; background:var(--warn); margin-right:5px; vertical-align:middle;"></span>1st response</span>
+        </span>
+      </div>
+      <div id="p-chart"></div>
+    </div>`;
+
+  el('p-back').addEventListener('click', renderStats_reset);
+  const tog = el('p-toggle');
+  if (tog) tog.addEventListener('click', () => {
+    state.showOverdue = !state.showOverdue;
+    renderPersonData();
+  });
+  wireRangeRow('p', renderPersonData);
+  renderMailboxPicker('p-mailboxes', d.mailbox_filter, (ids) => {
+    state.statsFilters = { ...state.statsFilters, mailbox_ids: ids };
+    renderPersonData();
+  });
+  drawTrend('p-chart', d.periods, d.overdue_hours);
+}
+
+function renderStats_reset() {
+  state.personId = null;
   renderStatsData();
+}
+
+// Hand-rolled SVG rather than Chart.js: two series on one plot with a
+// threshold line is less code this way than configuring a chart library,
+// and it inherits the theme variables directly.
+function drawTrend(containerId, periods, thresholdHours) {
+  const box = el(containerId);
+  if (!box) return;
+  if (!periods.length) { box.innerHTML = '<p class="chart-note">No data in this range.</p>'; return; }
+
+  const W = 620, H = 200, L = 42, R = 14, T = 18, B = 40;
+  const plotW = W - L - R, plotH = H - T - B;
+  const n = periods.length;
+  const step = plotW / n;
+
+  const maxVol = Math.max(...periods.map((p) => p.received), 1);
+  const frHours = periods.map((p) =>
+    p.first_response_avg_seconds == null ? null : p.first_response_avg_seconds / 3600);
+  const maxHrs = Math.max(thresholdHours * 1.15, ...frHours.filter((h) => h != null), 1);
+
+  const barW = Math.min(step * 0.6, 34);
+  const cx = (i) => L + step * i + step / 2;
+  const volY = (v) => T + plotH - (v / maxVol) * plotH;
+  const hrY = (h) => T + plotH - (h / maxHrs) * plotH;
+
+  const pts = frHours.map((h, i) => (h == null ? null : `${cx(i).toFixed(1)},${hrY(h).toFixed(1)}`))
+    .filter(Boolean).join(' ');
+
+  const labelEvery = Math.ceil(n / 6);
+
+  box.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:210px;" aria-hidden="true">
+      <line x1="${L}" y1="${T + plotH}" x2="${W - R}" y2="${T + plotH}" stroke="var(--line)" stroke-width="1"/>
+      <line x1="${L}" y1="${T + plotH / 2}" x2="${W - R}" y2="${T + plotH / 2}" stroke="var(--line-soft)" stroke-width="1"/>
+      <line x1="${L}" y1="${T}" x2="${W - R}" y2="${T}" stroke="var(--line-soft)" stroke-width="1"/>
+      <line x1="${L}" y1="${hrY(thresholdHours).toFixed(1)}" x2="${W - R}" y2="${hrY(thresholdHours).toFixed(1)}"
+            stroke="var(--alert)" stroke-width="1" stroke-dasharray="4 4"/>
+      <text x="${W - R - 2}" y="${(hrY(thresholdHours) - 4).toFixed(1)}" text-anchor="end"
+            font-size="10" fill="var(--alert)">${thresholdHours}h target</text>
+      ${periods.map((p, i) => `<rect x="${(cx(i) - barW / 2).toFixed(1)}" y="${volY(p.received).toFixed(1)}"
+            width="${barW.toFixed(1)}" height="${(T + plotH - volY(p.received)).toFixed(1)}"
+            fill="var(--brand-line)"/>`).join('')}
+      ${pts ? `<polyline points="${pts}" fill="none" stroke="var(--warn)" stroke-width="2"/>` : ''}
+      ${frHours.map((h, i) => (h == null ? '' :
+        `<circle cx="${cx(i).toFixed(1)}" cy="${hrY(h).toFixed(1)}" r="3" fill="var(--warn)"/>`)).join('')}
+      <text x="${L - 8}" y="${T + plotH + 4}" text-anchor="end" font-size="10" fill="var(--ink-faint)">0</text>
+      <text x="${L - 8}" y="${T + 10}" text-anchor="end" font-size="10" fill="var(--ink-faint)">${maxVol}</text>
+      ${periods.map((p, i) => (i % labelEvery === 0
+        ? `<text x="${cx(i).toFixed(1)}" y="${H - 16}" text-anchor="middle" font-size="10"
+             fill="var(--ink-faint)">${p.bucket.slice(5)}</text>` : '')).join('')}
+    </svg>
+    <p class="chart-note">Bars are tickets received; the line is average first response.
+      Response time rising while volume stays flat is not a load problem.</p>`;
 }
 
 // Mailbox filter: a button showing "n of m", opening a dropdown of tick-boxes.
