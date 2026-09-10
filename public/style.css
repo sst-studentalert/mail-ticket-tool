@@ -233,3 +233,11 @@ tr.ticket-row:hover { background: #f8fafc; }
   margin: 0; padding: 5px 0; font-size: 13px; color: var(--text); cursor: pointer;
 }
 .filter-pop input[type="checkbox"] { width: auto; }
+
+#s-mailboxes, #ms-mailboxes { min-width: auto; }
+.filters .clear-row {
+  flex-basis: 100%;
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}

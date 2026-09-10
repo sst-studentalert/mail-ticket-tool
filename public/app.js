@@ -961,7 +961,7 @@ async function renderStats() {
         <input type="date" id="s-to" value="${escapeHtml(state.statsFilters.to_date)}" />
       </div>
       <div id="s-mailboxes"></div>
-      <div style="align-self:flex-end;">
+      <div class="clear-row">
         <button class="secondary" id="s-clear">Clear dates</button>
       </div>
     </div>
