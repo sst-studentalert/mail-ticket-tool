@@ -238,5 +238,5 @@ tr.ticket-row:hover { background: #f8fafc; }
 .filters .clear-row {
   flex-basis: 100%;
   padding-top: 4px;
-  padding-left: 100px;
+  padding-left: 80px;
 }
