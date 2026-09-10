@@ -207,3 +207,29 @@ tr.ticket-row:hover { background: #f8fafc; }
 .pill-status { text-transform: capitalize; }
 
 .small { font-size: 12px; color: var(--muted); }
+
+.filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #eef0f2; color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 12px; font-size: 14px; font-weight: 600;
+}
+.filter-btn:hover { background: #e2e5e9; }
+.filter-btn.active { background: #eef2ff; color: var(--primary); border-color: #c7d2fe; }
+
+.filter-pop {
+  position: absolute; z-index: 40; top: 100%; left: 0; margin-top: 6px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+  padding: 10px 12px; min-width: 280px; max-height: 320px; overflow-y: auto;
+}
+.filter-pop .quick {
+  display: flex; gap: 12px; padding-bottom: 8px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.filter-pop .quick a { font-size: 12px; color: var(--primary); cursor: pointer; }
+.filter-pop label.opt {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0; padding: 5px 0; font-size: 13px; color: var(--text); cursor: pointer;
+}
+.filter-pop input[type="checkbox"] { width: auto; }

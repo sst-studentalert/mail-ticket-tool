@@ -960,7 +960,7 @@ async function renderStats() {
         <label>To date</label>
         <input type="date" id="s-to" value="${escapeHtml(state.statsFilters.to_date)}" />
       </div>
-      <div id="s-mailboxes" style="flex-basis:100%;">
+      <div id="s-mailboxes"></div>
         <label>Mailboxes</label>
         <div class="small">Loading…</div>
       </div>
@@ -991,28 +991,75 @@ function applyStatsFiltersAndReload() {
   renderStatsData();
 }
 
-// Renders the mailbox tick-list from whatever /api/stats reported as the
-// current selection, so the server stays the single source of truth for
-// what's selected (and what the viewer is even allowed to see).
+// Mailbox filter: a button showing "n of m", opening a dropdown of tick-boxes.
+// The server stays the source of truth for what's selected and what the viewer
+// is allowed to see - this only renders whatever /api/stats reported back.
+const pickerOpen = {};
+
+function closeAllPickers() {
+  Object.keys(pickerOpen).forEach((k) => {
+    pickerOpen[k] = false;
+    const p = document.getElementById(`${k}-pop`);
+    if (p) p.style.display = 'none';
+  });
+}
+
 function renderMailboxPicker(containerId, filter, onChange) {
   const box = el(containerId);
   if (!box || !filter || !filter.options || !filter.options.length) return;
+  const opts = filter.options;
+  const on = opts.filter((m) => m.selected).length;
+
   box.innerHTML = `
     <label>Mailboxes</label>
-    <div style="display:flex; flex-wrap:wrap; gap:12px; padding-top:4px;">
-      ${filter.options.map((m) => `
-        <label style="display:flex; align-items:center; gap:5px; margin:0; font-size:13px; white-space:nowrap;">
-          <input type="checkbox" data-mailbox-id="${m.id}" ${m.selected ? 'checked' : ''} style="width:auto;" />
-          ${escapeHtml(m.email)}
-        </label>`).join('')}
+    <div style="position:relative;">
+      <button type="button" class="filter-btn ${on < opts.length ? 'active' : ''}" id="${containerId}-btn">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">
+          <path d="M1.5 2.5h13l-5 6v5l-3-1.5v-3.5z" />
+        </svg>
+        ${on} of ${opts.length}
+      </button>
+      <div class="filter-pop" id="${containerId}-pop" style="display:none;">
+        <div class="quick"><a data-all="1">Select all</a><a data-none="1">Clear all</a></div>
+        ${opts.map((m) => `
+          <label class="opt">
+            <input type="checkbox" data-mailbox-id="${m.id}" ${m.selected ? 'checked' : ''} />
+            <span>${escapeHtml(m.email)}</span>
+          </label>`).join('')}
+      </div>
     </div>`;
-  box.querySelectorAll('input[data-mailbox-id]').forEach((cb) => {
-    cb.addEventListener('change', () => {
-      onChange(Array.from(box.querySelectorAll('input[data-mailbox-id]'))
-        .filter((x) => x.checked)
-        .map((x) => parseInt(x.dataset.mailboxId, 10)));
-    });
+
+  const btn = el(`${containerId}-btn`);
+  const pop = el(`${containerId}-pop`);
+  // The whole picker is rebuilt on every reload, so the open/closed state has
+  // to be remembered here - otherwise the dropdown snaps shut the moment you
+  // tick a box, and you can't untick two things in a row.
+  if (pickerOpen[containerId]) pop.style.display = 'block';
+
+  const current = () => Array.from(pop.querySelectorAll('input[data-mailbox-id]'))
+    .filter((x) => x.checked)
+    .map((x) => parseInt(x.dataset.mailboxId, 10));
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const wasOpen = pop.style.display !== 'none';
+    closeAllPickers();
+    pickerOpen[containerId] = !wasOpen;
+    pop.style.display = wasOpen ? 'none' : 'block';
   });
+  pop.addEventListener('click', (e) => e.stopPropagation());
+  pop.querySelectorAll('input[data-mailbox-id]').forEach((cb) => {
+    cb.addEventListener('change', () => onChange(current()));
+  });
+  pop.querySelector('[data-all]').addEventListener('click', () => onChange(opts.map((m) => m.id)));
+  pop.querySelector('[data-none]').addEventListener('click', () => onChange([]));
+
+  if (!renderMailboxPicker._wired) {
+    renderMailboxPicker._wired = true;
+    document.addEventListener('click', closeAllPickers);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllPickers(); });
+  }
 }
 
 async function renderStatsData() {
