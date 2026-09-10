@@ -1451,7 +1451,7 @@ function renderMailboxPicker(containerId, filter, onChange) {
   }
 }
 
-async // ---------- My Stats (personal view - available to admins AND agents) ----------
+// ---------- My Stats (personal view - available to admins AND agents) ----------
 
 async function renderMyStats() {
   const main = el('main');
