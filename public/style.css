@@ -240,3 +240,248 @@ tr.ticket-row:hover { background: #f8fafc; }
   padding-top: 4px;
   padding-left: 90px;
 }
+/* ===================================================================
+   Dashboard theme — append to the end of public/style.css
+   ===================================================================
+
+   SET THIS FIRST: --brand below is a placeholder academic blue. Replace
+   it with Scaler's actual brand hex and everything else follows from it.
+   --brand-dark should be roughly 12% darker, --brand-tint a very pale
+   wash of the same hue.
+   =================================================================== */
+
+:root {
+  --brand: #1f57c3;
+  --brand-dark: #17459c;
+  --brand-tint: #eef3fc;
+  --brand-line: #c9daf5;
+
+  --ink: #14181f;
+  --ink-soft: #5b6472;
+  --ink-faint: #8f97a3;
+  --line: #e6e9ee;
+  --line-soft: #f1f3f6;
+  --paper: #ffffff;
+  --canvas: #f7f8fa;
+
+  --warn: #a45c07;
+  --warn-tint: #fdf6ea;
+  --alert: #c0322c;
+  --alert-tint: #fdf0ef;
+  --alert-line: #f4cfcd;
+}
+
+body { background: var(--canvas); color: var(--ink); }
+
+/* --- top bar ------------------------------------------------------ */
+.topbar { border-bottom: 1px solid var(--line); }
+.topbar .brand { color: var(--brand); font-weight: 500; letter-spacing: -0.01em; }
+.topbar nav a { font-weight: 400; }
+.topbar nav a.active, .topbar nav a:hover { background: var(--brand-tint); color: var(--brand); }
+
+/* --- headings ----------------------------------------------------- */
+/* Weight 700 is what makes the current page shout. 500 throughout. */
+h1, h2, h3 { font-weight: 500; letter-spacing: -0.01em; color: var(--ink); }
+h2 { font-size: 20px; }
+h3 { font-size: 15px; }
+
+/* --- page header row ---------------------------------------------- */
+.page-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.page-head .meta { font-size: 12px; color: var(--ink-soft); margin: 2px 0 0; }
+
+/* --- range presets ------------------------------------------------ */
+.range-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.range-pill {
+  background: var(--paper); border: 1px solid var(--line); border-radius: 999px;
+  padding: 5px 13px; font-size: 13px; color: var(--ink-soft); cursor: pointer;
+  font-weight: 400;
+}
+.range-pill:hover { border-color: var(--brand-line); color: var(--ink); background: var(--paper); }
+.range-pill.on {
+  background: var(--brand-tint); color: var(--brand);
+  border-color: var(--brand-line); font-weight: 500;
+}
+.range-dates { display: flex; align-items: center; gap: 6px; margin-left: 4px; }
+.range-dates input { width: auto; font-size: 13px; padding: 5px 8px; }
+
+/* --- mailbox filter button + popover ------------------------------ */
+#s-mailboxes, #ms-mailboxes, #p-mailboxes { min-width: auto; }
+.filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 12px; font-size: 13px; font-weight: 400;
+}
+.filter-btn:hover { background: var(--paper); border-color: var(--brand-line); }
+.filter-btn.active {
+  background: var(--brand-tint); color: var(--brand);
+  border-color: var(--brand-line); font-weight: 500;
+}
+.filter-pop {
+  position: absolute; z-index: 40; top: 100%; left: 0; margin-top: 6px;
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(20,24,31,0.10);
+  padding: 10px 12px; min-width: 290px; max-height: 320px; overflow-y: auto;
+}
+.filter-pop .quick {
+  display: flex; gap: 12px; padding-bottom: 8px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.filter-pop .quick a { font-size: 12px; color: var(--brand); cursor: pointer; }
+.filter-pop label.opt {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  padding: 5px 0; font-size: 13px; color: var(--ink); cursor: pointer;
+}
+.filter-pop input[type="checkbox"] { width: auto; }
+
+/* --- unit toggle (# / %) ------------------------------------------ */
+.unit-toggle { display: inline-flex; background: var(--line-soft); border-radius: 6px; padding: 2px; }
+.unit-toggle span {
+  padding: 4px 11px; font-size: 13px; color: var(--ink-soft);
+  border-radius: 4px; cursor: pointer;
+}
+.unit-toggle span.on { background: var(--paper); color: var(--ink); font-weight: 500; }
+
+/* --- metric tiles -------------------------------------------------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.tile .k { font-size: 12px; color: var(--ink-soft); margin: 0 0 6px; }
+.tile .v { font-size: 24px; font-weight: 500; margin: 0; line-height: 1.15; }
+.tile .c { font-size: 11px; color: var(--ink-faint); margin: 5px 0 0; }
+.tile .c.worse { color: var(--warn); }
+
+/* --- data table ---------------------------------------------------- */
+.dash-card {
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 8px; overflow: hidden; margin-bottom: 16px;
+}
+.dash-card > .cap {
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+  font-size: 14px; font-weight: 500;
+}
+table.dash { width: 100%; border-collapse: collapse; background: transparent; border-radius: 0; }
+table.dash th {
+  background: #fbfcfd; color: var(--ink-soft); font-size: 12px; font-weight: 400;
+  text-align: right; padding: 10px 16px; border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+table.dash th:first-child, table.dash td:first-child { text-align: left; }
+table.dash td {
+  padding: 11px 16px; border-bottom: 1px solid var(--line-soft);
+  font-size: 13px; text-align: right; vertical-align: middle;
+}
+table.dash tbody tr:last-child td { border-bottom: 0; }
+table.dash tr.link-row { cursor: pointer; }
+table.dash tr.link-row:hover { background: var(--brand-tint); }
+table.dash td.name { color: var(--brand); }
+table.dash td.strong { font-weight: 500; }
+table.dash tr.queue-row td { background: var(--warn-tint); color: var(--ink-soft); }
+table.dash tfoot td {
+  background: #fbfcfd; font-weight: 500; border-top: 1px solid var(--line);
+  border-bottom: 0; padding: 12px 16px; font-size: 13px;
+}
+table.dash td.warn { color: var(--warn); }
+table.dash td.alert { color: var(--alert); font-weight: 500; }
+table.dash td.nil { color: var(--ink-faint); }
+
+/* --- overdue rows in the ticket list ------------------------------- */
+table.dash tr.overdue td { background: var(--alert-tint); }
+table.dash tr.overdue td:first-child { box-shadow: inset 3px 0 0 var(--alert); }
+
+/* --- alert ribbon --------------------------------------------------- */
+.ribbon {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  background: var(--alert-tint); border: 1px solid var(--alert-line);
+  border-radius: 8px; padding: 11px 16px; margin-bottom: 16px;
+}
+.ribbon .msg { display: flex; align-items: center; gap: 9px; font-size: 13px; color: #8f2723; }
+.ribbon .msg svg { flex: none; }
+.ribbon button.link {
+  background: none; border: 0; padding: 0; font: inherit; font-size: 13px;
+  color: var(--alert); text-decoration: underline; cursor: pointer; font-weight: 500;
+}
+
+/* --- back link ------------------------------------------------------ */
+.back-link {
+  background: none; border: 0; padding: 0; font: inherit; font-size: 13px;
+  color: var(--brand); cursor: pointer; margin-bottom: 10px; display: inline-block;
+}
+
+/* --- chart card ----------------------------------------------------- */
+.chart-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+}
+.chart-legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-soft); }
+.chart-note { font-size: 12px; color: var(--ink-soft); margin: 10px 0 0; }
+
+/* --- buttons -------------------------------------------------------- */
+button { background: var(--brand); font-weight: 500; }
+button:hover { background: var(--brand-dark); }
+button.secondary { background: var(--line-soft); color: var(--ink); font-weight: 400; }
+button.secondary:hover { background: #e7eaef; }
+
+/* --- status badges -------------------------------------------------- */
+.badge { font-weight: 500; }
+.badge.unassigned { background: var(--line-soft); color: var(--ink-soft); }
+.badge.assigned { background: var(--brand-tint); color: var(--brand); }
+.badge.replied { background: #e7f4ec; color: #1f6b3f; }
+.badge.closed { background: #f0edf7; color: #5b4a86; }
+
+/* --- misc ----------------------------------------------------------- */
+.info-banner { background: transparent; color: var(--ink-soft); padding: 0; font-size: 12px; margin-bottom: 16px; }
+.small { color: var(--ink-soft); }
+
+/* --- Polish: avatars, share bars, status dots ---------------------------- */
+
+.who { display: flex; align-items: center; gap: 10px; }
+.avatar {
+  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  background: var(--brand-tint); color: var(--brand);
+  font-size: 11px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+.avatar.lg { width: 44px; height: 44px; font-size: 15px; }
+.avatar.queue { background: #f7ecd9; color: var(--warn); }
+.avatar.blank { background: transparent; }
+
+/* Same number as the cell above it, but distribution becomes readable
+   without arithmetic. Scaled against the largest row, not the team total. */
+.share {
+  display: block; height: 3px; margin-top: 5px;
+  background: var(--line-soft); border-radius: 2px; overflow: hidden;
+}
+.share > span { display: block; height: 3px; background: var(--brand-line); border-radius: 2px; }
+
+.dot {
+  display: inline-block; width: 6px; height: 6px;
+  border-radius: 50%; margin-right: 6px; vertical-align: middle;
+}
+.dot.ok { background: #2f8a5b; }
+.dot.warn { background: #d08a1c; }
+.dot.bad { background: var(--alert, #c0392b); }
+
+.person-head { display: flex; align-items: center; gap: 13px; margin-bottom: 16px; }
+.person-head h2 { font-size: 21px; letter-spacing: -0.015em; }
+
+.all-clear {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: #2f8a5b; margin: 0 0 16px;
+}
+
+/* Denser header, roomier rows. Most of the difference between "a table"
+   and "a product" is here rather than in any one feature. */
+table.dash thead th {
+  font-size: 11px; letter-spacing: 0.03em; text-transform: uppercase;
+  color: var(--ink-faint); font-weight: 400;
+}
+table.dash td { padding: 13px 18px; }
+table.dash tbody tr:nth-child(even) td { background: #fbfcfd; }
+table.dash tbody tr.link-row:hover td { background: var(--brand-tint); }
+.dash-card { border-radius: 10px; }
+.tile { border-radius: 10px; padding: 15px 17px; }
+.tile .v { font-size: 25px; }

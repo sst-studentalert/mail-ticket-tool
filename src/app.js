@@ -21,6 +21,7 @@ const ticketRoutes = require('./routes/tickets');
 const rosterRoutes = require('./routes/roster');
 const statsRoutes = require('./routes/stats');
 const myStatsRoutes = require('./routes/myStats');
+const personStatsRoutes = require('./routes/personStats');
 const cronRoutes = require('./routes/cron');
 const settingsRoutes = require('./routes/settings');
 
@@ -86,6 +87,7 @@ async function buildApp() {
   app.use('/api/tickets', ticketRoutes);
   app.use('/api/roster', rosterRoutes);
   app.use('/api/stats', statsRoutes);
+  app.use('/api/stats/person', personStatsRoutes);
   app.use('/api/my-stats', myStatsRoutes);
   app.use('/api/cron', cronRoutes);
   app.use('/api/settings', settingsRoutes);
