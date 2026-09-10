@@ -241,7 +241,7 @@ tr.ticket-row:hover { background: #f8fafc; }
   padding-left: 90px;
 }
 /* ===================================================================
-   Dashboard theme — append to the end of public/style.css
+   Dashboard theme â€” append to the end of public/style.css
    ===================================================================
 
    SET THIS FIRST: --brand below is a placeholder academic blue. Replace
@@ -485,3 +485,61 @@ table.dash tbody tr.link-row:hover td { background: var(--brand-tint); }
 .dash-card { border-radius: 10px; }
 .tile { border-radius: 10px; padding: 15px 17px; }
 .tile .v { font-size: 25px; }
+
+/* ================================================================
+   SST-style dark mode â€” dark by default, light mode via toggle
+   ================================================================ */
+:root {
+  --bg:#090b10; --panel:#10141b; --border:#252b36; --text:#f3f5f7;
+  --muted:#929aa8; --primary:#6ea8ff; --primary-dark:#4f8ff0;
+  --danger:#ff6b6b; --success:#4fd18b; --warn:#e6a23c;
+  --brand:#6ea8ff; --brand-dark:#4f8ff0; --brand-tint:#111d31; --brand-line:#294c7d;
+  --ink:#f3f5f7; --ink-soft:#a4adba; --ink-faint:#697383;
+  --line:#252b36; --line-soft:#1b2029; --paper:#10141b; --canvas:#090b10;
+  --warn-tint:#211a0f; --alert:#ff6b6b; --alert-tint:#251214; --alert-line:#5b282c;
+}
+:root[data-theme="light"] {
+  --bg:#f7f8fa; --panel:#fff; --border:#e1e4e8; --text:#1f2328; --muted:#6a737d;
+  --primary:#2563eb; --primary-dark:#1d4ed8; --danger:#dc2626; --success:#16a34a; --warn:#a45c07;
+  --brand:#1f57c3; --brand-dark:#17459c; --brand-tint:#eef3fc; --brand-line:#c9daf5;
+  --ink:#14181f; --ink-soft:#5b6472; --ink-faint:#8f97a3; --line:#e6e9ee;
+  --line-soft:#f1f3f6; --paper:#fff; --canvas:#f7f8fa; --warn-tint:#fdf6ea;
+  --alert:#c0322c; --alert-tint:#fdf0ef; --alert-line:#f4cfcd;
+}
+html,body { background:var(--canvas); color:var(--ink); }
+body {
+  background:radial-gradient(circle at 50% -15%,rgba(110,168,255,.08),transparent 35%),var(--canvas);
+}
+.topbar {
+  background:rgba(16,20,27,.92); border-bottom:1px solid var(--line);
+  backdrop-filter:blur(12px);
+}
+:root[data-theme="light"] .topbar { background:rgba(255,255,255,.94); }
+.topbar .brand { color:var(--ink); font-weight:600; letter-spacing:-.02em; }
+.topbar nav a.active,.topbar nav a:hover { background:var(--brand-tint); color:var(--brand); }
+.card,table,.filters,.list-item,.modal,.dash-card,.tile,.chart-card {
+  background:var(--paper); border-color:var(--line);
+}
+input,select,textarea,.reply-editor { background:var(--panel); color:var(--text); border-color:var(--line); }
+input::placeholder,textarea::placeholder { color:var(--ink-faint); }
+button { background:var(--brand); }
+button:hover { background:var(--brand-dark); }
+button.secondary { background:var(--line-soft); color:var(--ink); border:1px solid var(--line); }
+button.secondary:hover { background:var(--line); }
+table th,table.dash th,table.dash tfoot td { background:var(--line-soft); }
+tr.ticket-row:hover,table.dash tr.link-row:hover td { background:var(--brand-tint); }
+.body-box,.thread-message.inbound { background:var(--line-soft); }
+.thread-message.outbound { background:var(--brand-tint); border-color:var(--brand-line); }
+.filter-btn,.range-pill { background:var(--paper); color:var(--ink-soft); border-color:var(--line); }
+.filter-btn:hover,.range-pill:hover { border-color:var(--brand-line); }
+.filter-btn.active,.range-pill.on { background:var(--brand-tint); color:var(--brand); border-color:var(--brand-line); }
+.filter-pop { background:var(--paper); border-color:var(--line); box-shadow:0 12px 30px rgba(0,0,0,.35); }
+.unit-toggle { background:var(--line-soft); }
+.unit-toggle span.on { background:var(--paper); color:var(--ink); }
+table.dash tbody tr:nth-child(even) td { background:rgba(255,255,255,.015); }
+:root[data-theme="light"] table.dash tbody tr:nth-child(even) td { background:#fbfcfd; }
+.theme-toggle { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.page-head h2 { font-size:22px; font-weight:600; }
+.tile .v { font-size:26px; font-weight:600; letter-spacing:-.02em; }
+.dash-card { border-radius:10px; }
+table.dash td { padding:14px 18px; }
