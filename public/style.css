@@ -237,7 +237,6 @@ tr.ticket-row:hover { background: #f8fafc; }
 #s-mailboxes, #ms-mailboxes { min-width: auto; }
 .filters .clear-row {
   flex-basis: 100%;
-  display: flex;
-  justify-content: center;
   padding-top: 4px;
+  padding-left: 120px;
 }
