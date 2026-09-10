@@ -8,7 +8,7 @@ const state = {
   roster: [],
   tickets: [],
   filters: { mailbox_id: '', assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
-  statsFilters: { from_date: '', to_date: '' },
+  statsFilters: { from_date: '', to_date: '', mailbox_ids: null },
   myStatsFilters: { from_date: '', to_date: '' },
   page: 'tickets',
   openTicketId: null,
@@ -960,6 +960,10 @@ async function renderStats() {
         <label>To date</label>
         <input type="date" id="s-to" value="${escapeHtml(state.statsFilters.to_date)}" />
       </div>
+      <div id="s-mailboxes" style="flex-basis:100%;">
+        <label>Mailboxes</label>
+        <div class="small">Loading…</div>
+      </div>
       <div style="align-self:flex-end;">
         <button class="secondary" id="s-clear">Clear dates</button>
       </div>
@@ -970,7 +974,7 @@ async function renderStats() {
   el('s-from').addEventListener('change', applyStatsFiltersAndReload);
   el('s-to').addEventListener('change', applyStatsFiltersAndReload);
   el('s-clear').addEventListener('click', () => {
-    state.statsFilters = { from_date: '', to_date: '' };
+        state.statsFilters = { from_date: '', to_date: '', mailbox_ids: null };
     renderStatsData();
     el('s-from').value = '';
     el('s-to').value = '';
@@ -987,10 +991,43 @@ function applyStatsFiltersAndReload() {
   renderStatsData();
 }
 
+// Renders the mailbox tick-list from whatever /api/stats reported as the
+// current selection, so the server stays the single source of truth for
+// what's selected (and what the viewer is even allowed to see).
+function renderMailboxPicker(containerId, filter, onChange) {
+  const box = el(containerId);
+  if (!box || !filter || !filter.options || !filter.options.length) return;
+  box.innerHTML = `
+    <label>Mailboxes</label>
+    <div style="display:flex; flex-wrap:wrap; gap:12px; padding-top:4px;">
+      ${filter.options.map((m) => `
+        <label style="display:flex; align-items:center; gap:5px; margin:0; font-size:13px; white-space:nowrap;">
+          <input type="checkbox" data-mailbox-id="${m.id}" ${m.selected ? 'checked' : ''} style="width:auto;" />
+          ${escapeHtml(m.email)}
+        </label>`).join('')}
+    </div>`;
+  box.querySelectorAll('input[data-mailbox-id]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      onChange(Array.from(box.querySelectorAll('input[data-mailbox-id]'))
+        .filter((x) => x.checked)
+        .map((x) => parseInt(x.dataset.mailboxId, 10)));
+    });
+  });
+}
+
 async function renderStatsData() {
   const params = new URLSearchParams();
-  Object.entries(state.statsFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
+  const { mailbox_ids, ...dates } = state.statsFilters;
+  Object.entries(dates).forEach(([k, v]) => { if (v) params.set(k, v); });
+  // Not a truthiness check: [] is truthy in JS, and an empty selection must
+  // still be sent so the server shows zeros instead of silently defaulting.
+  if (mailbox_ids !== null) params.set('mailboxIds', mailbox_ids.join(','));
   const data = await api(`/stats?${params.toString()}`);
+
+  renderMailboxPicker('s-mailboxes', data.mailbox_filter, (ids) => {
+    state.statsFilters = { ...state.statsFilters, mailbox_ids: ids };
+    renderStatsData();
+  });
   const wrap = el('stats-wrap');
 
   const tatLine = (label, tat) => `
