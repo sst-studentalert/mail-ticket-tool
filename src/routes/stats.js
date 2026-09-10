@@ -22,7 +22,7 @@ const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 const requireAdmin = require('../middleware/requireAdmin');
 const { fmtDuration } = require('../services/tat');
-const { getAccessibleMailboxIds } = require('../services/mailboxAccess');
+const { resolveMailboxScope } = require('../services/mailboxScope');
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -61,22 +61,12 @@ router.get('/', async (req, res, next) => {
     }
     const dateSql = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : '';
 
-    // Mailbox access allow-list - a separate, additional restriction from
-    // is_admin (see services/mailboxAccess.js). Admins are still scoped to
-    // their granted mailboxes here, same as in the Tickets list, so the
-    // Dashboard never shows numbers from a mailbox they can't see tickets
-    // from. null (the default, unrestricted) means no extra clause.
-    const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
-    let mailboxSql = '';
-    let mailboxParams = [];
-    if (accessibleMailboxIds !== null) {
-      if (accessibleMailboxIds.length === 0) {
-        mailboxSql = 'AND 1 = 0';
-      } else {
-        mailboxSql = 'AND mailbox_id = ANY(?)';
-        mailboxParams = [accessibleMailboxIds];
-      }
-    }
+    // Which mailboxes this Dashboard covers: the viewer's mailbox_access
+    // allow-list, intersected with whatever they've ticked in the filter bar
+    // (?mailboxIds=). See services/mailboxScope.js.
+    const scope = await resolveMailboxScope(req.user.id, req.query.mailboxIds);
+    const mailboxSql = scope.sql;
+    const mailboxParams = scope.params;
 
     // Computes { avg_seconds, avg_human, sample_size } for a TAT metric over
     // a given WHERE clause (params must match placeholders in extraWhere),
@@ -147,12 +137,9 @@ router.get('/', async (req, res, next) => {
     // Mailbox list itself is also scoped - an admin restricted to certain
     // mailboxes shouldn't even see other mailboxes' rows (with a count of
     // 0) in this table, since that still reveals which mailboxes exist.
-    const mailboxListSql = accessibleMailboxIds === null
-      ? ''
-      : accessibleMailboxIds.length === 0
-        ? 'WHERE 1 = 0'
-        : 'WHERE m.id = ANY(?)';
-    const mailboxListParams = accessibleMailboxIds && accessibleMailboxIds.length ? [accessibleMailboxIds] : [];
+    const mailboxListSql = scope.listSql;
+    const mailboxListParams = scope.listParams;
+
     // Per-status breakdown alongside the total, so unassigned + assigned +
     // replied + closed always sums to c (both computed with the exact same
     // is_automated/date-range filters, so they can't drift apart).
@@ -214,6 +201,8 @@ router.get('/', async (req, res, next) => {
       per_mailbox: perMailbox,
       tat: overallTat,
       tat_trend: tatTrend,
+      mailbox_filter: { options: scope.options, included: scope.included, excluded: scope.excluded },
+
       from_date: from_date || null,
       to_date: to_date || null,
     });

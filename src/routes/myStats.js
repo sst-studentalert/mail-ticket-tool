@@ -10,7 +10,7 @@ const express = require('express');
 const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 const { fmtDuration } = require('../services/tat');
-const { getAccessibleMailboxIds } = require('../services/mailboxAccess');
+const { resolveMailboxScope } = require('../services/mailboxScope');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -43,23 +43,12 @@ router.get('/', async (req, res, next) => {
     }
     const dateSql = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : '';
 
-    // Mailbox access allow-list (see services/mailboxAccess.js). In
-    // practice a ticket can't get assigned to someone outside their granted
-    // mailboxes any more (see routes/tickets.js's /assign guard), but this
-    // is kept as a defensive second layer in case access is revoked after
-    // the fact - so "my tickets" never shows something from a mailbox this
-    // person no longer has access to.
-    const accessibleMailboxIds = await getAccessibleMailboxIds(userId);
-    let mailboxSql = '';
-    let mailboxParams = [];
-    if (accessibleMailboxIds !== null) {
-      if (accessibleMailboxIds.length === 0) {
-        mailboxSql = 'AND 1 = 0';
-      } else {
-        mailboxSql = 'AND mailbox_id = ANY(?)';
-        mailboxParams = [accessibleMailboxIds];
-      }
-    }
+    // Which mailboxes this view covers: the viewer's mailbox_access
+    // allow-list, intersected with whatever they've ticked in the filter bar
+    // (?mailboxIds=). See services/mailboxScope.js.
+    const scope = await resolveMailboxScope(userId, req.query.mailboxIds);
+    const mailboxSql = scope.sql;
+    const mailboxParams = scope.params;
 
     async function tatFor(milestoneExpr) {
       const row = await db
@@ -122,6 +111,7 @@ router.get('/', async (req, res, next) => {
       per_mailbox: perMailbox,
       tat,
       automated_excluded_total: automatedExcludedTotal,
+      mailbox_filter: { options: scope.options, included: scope.included, excluded: scope.excluded },
       from_date: from_date || null,
       to_date: to_date || null,
     });
