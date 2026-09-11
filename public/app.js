@@ -49,12 +49,15 @@ const ADMIN_ONLY_PAGES = ['stats', 'mailboxes', 'roster'];
 function onHashChange() {
   const hash = (location.hash || '#tickets').replace('#', '');
   let page = hash.split('?')[0] || 'tickets';
-  // Agents (non-admins) only ever get the Tickets page - the other pages'
-  // APIs would 403 for them anyway, so don't even render them.
-  if (ADMIN_ONLY_PAGES.includes(page) && !(state.user && state.user.is_admin)) {
-    page = 'tickets';
-    location.hash = 'tickets';
+
+  // When the user navigates back to the Dashboard from another tab,
+  // always return to the main Dashboard rather than the last person
+  // drill-down they opened.
+  if (page === 'stats') {
+    state.personId = null;
+    state.showOverdue = false;
   }
+
   state.page = page;
   renderApp();
 }
@@ -179,7 +182,8 @@ function renderApp() {
   const mainHtml = banner.join('');
   el('main').innerHTML = mainHtml;
 
- if (state.page === 'stats') { state.personId ? renderPerson(state.personId) : renderStats(); }
+ if (state.page === 'stats') {renderStats();}
+  else if (state.page === 'mystats') renderMyStats();
   else if (state.page === 'mystats') renderMyStats();
   else if (state.page === 'mailboxes') renderMailboxes();
   else if (state.page === 'roster') renderRoster();
