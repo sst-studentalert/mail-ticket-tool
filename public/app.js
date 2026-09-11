@@ -1165,8 +1165,8 @@ async function renderStatsData() {
     ${rangeRowHtml('s')}
 
     <div class="tiles">
-      <div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>
-      <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets for this Dashboard range"><p class="k">Unassigned</p><p class="v">${data.unassigned.total}</p></div>
+      ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>` : ''}
+      <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.total}</p></div>
       <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
       <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied}</p></div>
       <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed}</p></div>
