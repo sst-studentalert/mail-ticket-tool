@@ -58,6 +58,12 @@ function onHashChange() {
     state.showOverdue = false;
   }
 
+  // Agents (non-admins) only ever get the Tickets page.
+  if (ADMIN_ONLY_PAGES.includes(page) && !(state.user && state.user.is_admin)) {
+    page = 'tickets';
+    location.hash = 'tickets';
+  }
+
   state.page = page;
   renderApp();
 }
@@ -182,8 +188,7 @@ function renderApp() {
   const mainHtml = banner.join('');
   el('main').innerHTML = mainHtml;
 
- if (state.page === 'stats') {renderStats();}
-  else if (state.page === 'mystats') renderMyStats();
+ if (state.page === 'stats') { renderStats(); }
   else if (state.page === 'mystats') renderMyStats();
   else if (state.page === 'mailboxes') renderMailboxes();
   else if (state.page === 'roster') renderRoster();
@@ -235,6 +240,22 @@ function toDatetimeLocal(iso) {
 async function renderTickets() {
   const main = el('main');
   const isAdmin = state.user.is_admin;
+
+  // Read ticket filters passed in the hash, e.g. when opening the
+  // Dashboard's Unassigned queue. This keeps the date range and assignee
+  // filter when moving from Dashboard -> Tickets.
+  const hashQuery = location.hash.includes('?')
+    ? location.hash.slice(location.hash.indexOf('?') + 1)
+    : '';
+  const hashParams = new URLSearchParams(hashQuery);
+  if (hashParams.has('assignee_id') || hashParams.has('from_date') || hashParams.has('to_date')) {
+    state.filters = {
+      ...state.filters,
+      assignee_id: hashParams.get('assignee_id') || '',
+      from_date: hashParams.get('from_date') || '',
+      to_date: hashParams.get('to_date') || '',
+    };
+  }
   main.insertAdjacentHTML('beforeend', `
     <div class="section-header">
       <h2 style="margin:0;">Tickets</h2>
@@ -253,8 +274,8 @@ async function renderTickets() {
         <label>Assignee</label>
         <select id="f-assignee">
           <option value="">All</option>
-          <option value="unassigned">Unassigned</option>
-          ${state.roster.map((r) => `<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}
+          <option value="unassigned" ${state.filters.assignee_id === 'unassigned' ? 'selected' : ''}>Unassigned</option>
+          ${state.roster.map((r) => `<option value="${r.id}" ${String(state.filters.assignee_id) === String(r.id) ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
         </select>
       </div>
       ` : ''}
@@ -286,11 +307,11 @@ async function renderTickets() {
       </div>
       <div>
         <label>From date</label>
-        <input type="date" id="f-from" />
+        <input type="date" id="f-from" value="${escapeHtml(state.filters.from_date)}" />
       </div>
       <div>
         <label>To date</label>
-        <input type="date" id="f-to" />
+        <input type="date" id="f-to" value="${escapeHtml(state.filters.to_date)}" />
       </div>
     </div>
     <div id="ticket-table-wrap"><em>Loading tickets...</em></div>
@@ -1094,7 +1115,40 @@ async function renderStats() {
 
 async function renderStatsData() {
   const root = el('dash-root');
-  const data = await api(`/stats?${statsParams().toString()}`);
+  const statsQuery = statsParams();
+
+  // The Unassigned queue is defined by CURRENT ownership (assignee_id IS NULL),
+  // not by ticket status. Use the same Dashboard date range and mailbox scope
+  // when calculating it so the number and the click-through list always match.
+  const unassignedCountPromise = (async () => {
+    const mailboxIds = state.statsFilters.mailbox_ids;
+    if (Array.isArray(mailboxIds) && mailboxIds.length === 0) return 0;
+
+    const makeQuery = (mailboxId) => {
+      const p = new URLSearchParams();
+      p.set('assignee_id', 'unassigned');
+      const { from, to } = resolvedRange();
+      if (from) p.set('from_date', from);
+      if (to) p.set('to_date', to);
+      if (mailboxId != null) p.set('mailbox_id', mailboxId);
+      return p;
+    };
+
+    if (Array.isArray(mailboxIds)) {
+      const results = await Promise.all(mailboxIds.map((id) => api(`/tickets?${makeQuery(id).toString()}`)));
+      return results.reduce((sum, r) => sum + (r.tickets || []).length, 0);
+    }
+
+    const result = await api(`/tickets?${makeQuery(null).toString()}`);
+    return (result.tickets || []).length;
+  })();
+
+  const [data, unassignedCount] = await Promise.all([
+    api(`/stats?${statsQuery.toString()}`),
+    unassignedCountPromise,
+  ]);
+  data.unassigned = { ...(data.unassigned || {}), total: unassignedCount };
+
   const unit = state.statsFilters.unit || '#';
 
   // Row percentages: of THIS person's tickets, how many are in each status.
@@ -1163,7 +1217,7 @@ async function renderStatsData() {
               ${tatCell(p.tat.first_response, FIRST_REPLY_TARGET_H)}
               ${tatCell(p.tat.resolution, RESOLUTION_TARGET_H)}
             </tr>`).join('')}
-          <tr class="queue-row">
+          <tr class="queue-row" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets for this Dashboard range">
             <td><span class="who"><span class="avatar queue">!</span><span>Unassigned queue</span></span></td>
             <td class="nil">—</td><td class="nil">—</td><td class="nil">—</td>
             <td class="strong">${data.unassigned.total}</td>
@@ -1193,6 +1247,29 @@ async function renderStatsData() {
   root.querySelectorAll('tr.link-row[data-member]').forEach((tr) => {
     tr.addEventListener('click', () => renderPerson(parseInt(tr.dataset.member, 10)));
   });
+
+  // Open exactly the tickets represented by the Unassigned queue: current
+  // assignee is NULL, regardless of ticket status, using this Dashboard's
+  // selected date range.
+  const unassignedRow = root.querySelector('tr[data-unassigned-queue]');
+  if (unassignedRow) {
+    const openUnassignedQueue = () => {
+      const { from, to } = resolvedRange();
+      const p = new URLSearchParams();
+      p.set('assignee_id', 'unassigned');
+      if (from) p.set('from_date', from);
+      if (to) p.set('to_date', to);
+      location.hash = `tickets?${p.toString()}`;
+    };
+    unassignedRow.addEventListener('click', openUnassignedQueue);
+    unassignedRow.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openUnassignedQueue();
+      }
+    });
+  }
+
   renderMailboxPicker('s-mailboxes', data.mailbox_filter, (ids) => {
     state.statsFilters = { ...state.statsFilters, mailbox_ids: ids };
     renderStatsData();
