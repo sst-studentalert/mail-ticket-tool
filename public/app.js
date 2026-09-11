@@ -1117,43 +1117,45 @@ async function renderStatsData() {
   const root = el('dash-root');
   const statsQuery = statsParams();
 
-  // The Unassigned queue is defined by CURRENT ownership (assignee_id IS NULL),
-  // not by ticket status. Use the same Dashboard date range and mailbox scope
-  // when calculating it so the number and the click-through list always match.
-  const unassignedCountPromise = (async () => {
-    const mailboxIds = state.statsFilters.mailbox_ids;
+  // Dashboard separates two useful operational metrics:
+  // 1) Unassigned backlog = tickets that are CURRENTLY unassigned, regardless of age.
+  // 2) New unassigned = tickets received in the selected Dashboard range and still unassigned.
+  // This prevents an old July ticket from disappearing from the current backlog
+  // while still keeping it out of September's "New unassigned" count.
+  const mailboxIds = state.statsFilters.mailbox_ids;
+
+  const makeBacklogQuery = (mailboxId) => {
+    const p = new URLSearchParams();
+    p.set('assignee_id', 'unassigned');
+    if (mailboxId != null) p.set('mailbox_id', mailboxId);
+    return p;
+  };
+
+  const unassignedBacklogPromise = (async () => {
     if (Array.isArray(mailboxIds) && mailboxIds.length === 0) return 0;
 
-    const makeQuery = (mailboxId) => {
-      const p = new URLSearchParams();
-      p.set('assignee_id', 'unassigned');
-      const { from, to } = resolvedRange();
-      if (from) p.set('from_date', from);
-      if (to) p.set('to_date', to);
-      if (mailboxId != null) p.set('mailbox_id', mailboxId);
-      return p;
-    };
-
     if (Array.isArray(mailboxIds)) {
-      const results = await Promise.all(mailboxIds.map((id) => api(`/tickets?${makeQuery(id).toString()}`)));
+      const results = await Promise.all(
+        mailboxIds.map((id) => api(`/tickets?${makeBacklogQuery(id).toString()}`))
+      );
       return results.reduce((sum, r) => sum + (r.tickets || []).length, 0);
     }
 
-    const result = await api(`/tickets?${makeQuery(null).toString()}`);
+    const result = await api(`/tickets?${makeBacklogQuery(null).toString()}`);
     return (result.tickets || []).length;
   })();
 
-  const [data, unassignedCount] = await Promise.all([
+  const [data, unassignedBacklog] = await Promise.all([
     api(`/stats?${statsQuery.toString()}`),
-    unassignedCountPromise,
+    unassignedBacklogPromise,
   ]);
-  data.unassigned = { ...(data.unassigned || {}), total: unassignedCount };
 
+  // data.unassigned is the range-based number: tickets received in the
+  // selected period that are still currently unassigned.
+  const newUnassigned = Number(data.unassigned?.total || 0);
   const unit = state.statsFilters.unit || '#';
 
   // Row percentages: of THIS person's tickets, how many are in each status.
-  // Answers "is this person keeping up". For workload share instead, divide
-  // by the team total rather than the row total on the next line.
   const cell = (n, rowTotal) => {
     if (unit === '%' && rowTotal > 0) return `${Math.round((n / rowTotal) * 100)}%`;
     return n;
@@ -1184,8 +1186,9 @@ async function renderStatsData() {
     ${rangeRowHtml('s')}
 
     <div class="tiles">
-      <div class="tile"><p class="k">Tickets in range</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>
-      <div class="tile"><p class="k">Awaiting first reply</p><p class="v">${teamTotals.assigned + data.unassigned.total}</p></div>
+      <div class="tile"><p class="k">Tickets in range</p><p class="v">${teamTotals.total + newUnassigned}</p></div>
+      <div class="tile"><p class="k">Unassigned backlog</p><p class="v">${unassignedBacklog}</p><p class="c">currently unassigned</p></div>
+      <div class="tile"><p class="k">New unassigned</p><p class="v">${newUnassigned}</p><p class="c">received in selected range</p></div>
       <div class="tile"><p class="k">1st response</p><p class="v">${
         data.tat.first_response.avg_human || '—'}</p><p class="c">n = ${data.tat.first_response.sample_size}</p></div>
       <div class="tile"><p class="k">Resolution</p><p class="v">${
@@ -1217,10 +1220,16 @@ async function renderStatsData() {
               ${tatCell(p.tat.first_response, FIRST_REPLY_TARGET_H)}
               ${tatCell(p.tat.resolution, RESOLUTION_TARGET_H)}
             </tr>`).join('')}
-          <tr class="queue-row" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets for this Dashboard range">
-            <td><span class="who"><span class="avatar queue">!</span><span>Unassigned queue</span></span></td>
+          <tr class="queue-row" data-unassigned-queue="1" tabindex="0" role="button" title="Open currently unassigned tickets">
+            <td><span class="who"><span class="avatar queue">!</span><span>Unassigned backlog</span></span></td>
             <td class="nil">—</td><td class="nil">—</td><td class="nil">—</td>
-            <td class="strong">${data.unassigned.total}</td>
+            <td class="strong">${unassignedBacklog}</td>
+            <td class="nil">—</td><td class="nil">—</td>
+          </tr>
+          <tr>
+            <td><span class="who"><span class="avatar blank"></span><span>New unassigned</span></span></td>
+            <td class="nil">—</td><td class="nil">—</td><td class="nil">—</td>
+            <td class="strong">${newUnassigned}</td>
             <td class="nil">—</td><td class="nil">—</td>
           </tr>
         </tbody>
@@ -1235,7 +1244,7 @@ async function renderStatsData() {
         </tr></tfoot>
       </table>
     </div>
-    <p class="small">Click a name for their history.</p>`;
+    <p class="small">Unassigned backlog = currently unassigned tickets, regardless of when received. New unassigned = currently unassigned tickets received in the selected range. Click a name for their history.</p>`;
 
   wireRangeRow('s', renderStatsData);
   root.querySelectorAll('.unit-toggle span[data-unit]').forEach((s) => {
@@ -1248,24 +1257,15 @@ async function renderStatsData() {
     tr.addEventListener('click', () => renderPerson(parseInt(tr.dataset.member, 10)));
   });
 
-  // Open exactly the tickets represented by the Unassigned queue: current
-  // assignee is NULL, regardless of ticket status, using this Dashboard's
-  // selected date range.
   const unassignedRow = root.querySelector('tr[data-unassigned-queue]');
   if (unassignedRow) {
-    const openUnassignedQueue = () => {
-      const { from, to } = resolvedRange();
-      const p = new URLSearchParams();
-      p.set('assignee_id', 'unassigned');
-      if (from) p.set('from_date', from);
-      if (to) p.set('to_date', to);
-      location.hash = `tickets?${p.toString()}`;
-    };
-    unassignedRow.addEventListener('click', openUnassignedQueue);
+    unassignedRow.addEventListener('click', () => {
+      location.hash = 'tickets?assignee_id=unassigned';
+    });
     unassignedRow.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        openUnassignedQueue();
+        location.hash = 'tickets?assignee_id=unassigned';
       }
     });
   }
