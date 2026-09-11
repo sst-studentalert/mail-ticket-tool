@@ -1165,12 +1165,11 @@ async function renderStatsData() {
     ${rangeRowHtml('s')}
 
     <div class="tiles">
-      <div class="tile"><p class="k">Tickets in range</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>
-      <div class="tile"><p class="k">Awaiting first reply</p><p class="v">${teamTotals.assigned + data.unassigned.total}</p></div>
-      <div class="tile"><p class="k">1st response</p><p class="v">${
-        data.tat.first_response.avg_human || '—'}</p><p class="c">n = ${data.tat.first_response.sample_size}</p></div>
-      <div class="tile"><p class="k">Resolution</p><p class="v">${
-        data.tat.resolution.avg_human || '—'}</p><p class="c">n = ${data.tat.resolution.sample_size}</p></div>
+      <div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>
+      <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets for this Dashboard range"><p class="k">Unassigned</p><p class="v">${data.unassigned.total}</p></div>
+      <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
+      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied}</p></div>
+      <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed}</p></div>
     </div>
 
     <div class="dash-card">
@@ -1198,12 +1197,6 @@ async function renderStatsData() {
               ${tatCell(p.tat.first_response, FIRST_REPLY_TARGET_H)}
               ${tatCell(p.tat.resolution, RESOLUTION_TARGET_H)}
             </tr>`).join('')}
-          <tr class="queue-row" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets for this Dashboard range">
-            <td><span class="who"><span class="avatar queue">!</span><span>Unassigned queue</span></span></td>
-            <td class="nil">—</td><td class="nil">—</td><td class="nil">—</td>
-            <td class="strong">${data.unassigned.total}</td>
-            <td class="nil">—</td><td class="nil">—</td>
-          </tr>
         </tbody>
         <tfoot><tr>
           <td><span class="who"><span class="avatar blank"></span><span>Team total</span></span></td>
@@ -1232,8 +1225,8 @@ async function renderStatsData() {
   // Open the Unassigned filter using the same Dashboard date range.
   // The Dashboard count itself comes from SQL COUNT(*) in /api/stats;
   // the Tickets page is only the drill-down/filter view.
-  const unassignedRow = root.querySelector('tr[data-unassigned-queue]');
-  if (unassignedRow) {
+  const unassignedTile = root.querySelector('[data-unassigned-queue]');
+  if (unassignedTile) {
     const openUnassignedQueue = () => {
       const { from, to } = resolvedRange();
       const p = new URLSearchParams();
@@ -1242,8 +1235,8 @@ async function renderStatsData() {
       if (to) p.set('to_date', to);
       location.hash = `tickets?${p.toString()}`;
     };
-    unassignedRow.addEventListener('click', openUnassignedQueue);
-    unassignedRow.addEventListener('keydown', (e) => {
+    unassignedTile.addEventListener('click', openUnassignedQueue);
+    unassignedTile.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         openUnassignedQueue();
