@@ -61,26 +61,6 @@ function slaPassExpr() {
     )`;
 }
 
-async function slaFor(extraWhere, extraParams) {
-  const passExpr = slaPassExpr();
-  const row = await db
-    .prepare(
-      `SELECT COUNT(*) AS total,
-              COUNT(*) FILTER (WHERE ${passExpr}) AS met
-       FROM tickets
-       WHERE is_automated = 0 AND first_received_at IS NOT NULL
-         ${dateSql} ${mailboxSql} ${extraWhere}`
-    )
-    .get(...dateParams, ...mailboxParams, ...extraParams);
-  const total = Number(row.total || 0);
-  const met = Number(row.met || 0);
-  return {
-    met,
-    total,
-    missed: total - met,
-    percent: total ? Math.round((met / total) * 100) : null,
-  };
-}
 
 router.get('/', async (req, res, next) => {
   try {
@@ -106,6 +86,29 @@ router.get('/', async (req, res, next) => {
     const scope = await resolveMailboxScope(req.user.id, req.query.mailboxIds);
     const mailboxSql = scope.sql;
     const mailboxParams = scope.params;
+
+    // SLA calculation is scoped to this request's date and mailbox filters.
+async function slaFor(extraWhere, extraParams) {
+      const passExpr = slaPassExpr();
+      const row = await db
+        .prepare(
+          `SELECT COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE ${passExpr}) AS met
+           FROM tickets
+           WHERE is_automated = 0 AND first_received_at IS NOT NULL
+             ${dateSql} ${mailboxSql} ${extraWhere}`
+        )
+        .get(...dateParams, ...mailboxParams, ...extraParams);
+      const total = Number(row.total || 0);
+      const met = Number(row.met || 0);
+      return {
+        met,
+        total,
+        missed: total - met,
+        percent: total ? Math.round((met / total) * 100) : null,
+      };
+    }
+    
 
     // Computes { avg_seconds, avg_human, sample_size } for a TAT metric over
     // a given WHERE clause (params must match placeholders in extraWhere),
