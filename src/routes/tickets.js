@@ -300,7 +300,7 @@ async function requireTicketAccess(req, res, ticket) {
 // assigned tickets regardless of what filters they pass in.
 router.get('/', async (req, res, next) => {
   try {
-    const { mailbox_id, assignee_id, status, automated, tag, q, from_date, to_date } = req.query;
+    const { mailbox_id, assignee_id, status, automated, tag, q, learner, from_date, to_date } = req.query;
 
     const clauses = [];
     const params = [];
@@ -378,6 +378,32 @@ router.get('/', async (req, res, next) => {
       clauses.push('(t.subject LIKE ? OR t.from_address LIKE ? OR t.snippet LIKE ? OR t.body LIKE ?)');
       const like = `%${q}%`;
       params.push(like, like, like, like);
+    }
+
+    // Learner filter searches the live Google Sheet mapping by learner name
+    // or SST email, then limits tickets to the matching learner emails.
+    // This is intentionally separate from the general ticket search so that
+    // searching a learner name works even when that name is not stored in the
+    // tickets table itself.
+    if (learner) {
+      const learnerMapping = await loadLearnerMapping();
+      const needle = String(learner).trim().toLowerCase();
+      const matchingEmails = Object.entries(learnerMapping)
+        .filter(([email, record]) =>
+          email.includes(needle) || String(record.name || '').toLowerCase().includes(needle)
+        )
+        .map(([email]) => email);
+
+      if (!matchingEmails.length) {
+        clauses.push('1 = 0');
+      } else {
+        const learnerClauses = [];
+        for (const email of matchingEmails) {
+          learnerClauses.push('(LOWER(TRIM(t.from_address)) = ? OR LOWER(TRIM(t.from_address)) LIKE ?)');
+          params.push(email, `%<${email}>%`);
+        }
+        clauses.push(`(${learnerClauses.join(' OR ')})`);
+      }
     }
 
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';

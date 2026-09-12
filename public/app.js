@@ -263,57 +263,79 @@ async function renderTickets() {
       <h2 style="margin:0;">Tickets</h2>
     </div>
     ${!isAdmin ? '<p class="small">Showing tickets assigned to you.</p>' : ''}
-    <div class="filters">
+    <div class="filters" style="display:flex;flex-direction:column;gap:12px;">
       <div>
-        <label>Mailbox</label>
-        <select id="f-mailbox">
-          <option value="">All</option>
-          ${state.mailboxes.map((m) => `<option value="${m.id}">${escapeHtml(m.email)}</option>`).join('')}
-        </select>
+        <label>Quick filters</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="secondary quick-ticket-filter" data-status="">All</button>
+          <button type="button" class="secondary quick-ticket-filter" data-status="unassigned">Unassigned</button>
+          <button type="button" class="secondary quick-ticket-filter" data-status="assigned">First response pending</button>
+          <button type="button" class="secondary quick-ticket-filter" data-status="replied">Open / Replied</button>
+          <button type="button" class="secondary quick-ticket-filter" data-status="closed">Closed</button>
+        </div>
       </div>
-      ${isAdmin ? `
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;">
+        <div>
+          <label>Mailbox</label>
+          <select id="f-mailbox">
+            <option value="">All mailboxes</option>
+            ${state.mailboxes.map((m) => `<option value="${m.id}">${escapeHtml(m.email)}</option>`).join('')}
+          </select>
+        </div>
+        ${isAdmin ? `
+        <div>
+          <label>Assignee</label>
+          <select id="f-assignee">
+            <option value="">All assignees</option>
+            <option value="unassigned" ${state.filters.assignee_id === 'unassigned' ? 'selected' : ''}>Unassigned</option>
+            ${state.roster.map((r) => `<option value="${r.id}" ${String(state.filters.assignee_id) === String(r.id) ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
+          </select>
+        </div>
+        ` : ''}
+        <div>
+          <label>Status</label>
+          <select id="f-status">
+            <option value="">All statuses</option>
+            <option value="unassigned">Unassigned</option>
+            <option value="assigned">First response pending</option>
+            <option value="replied">Open / Replied</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+        <div>
+          <label>Automated</label>
+          <select id="f-automated">
+            <option value="">All tickets</option>
+            <option value="false">Non-automated</option>
+            <option value="true">Automated only</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1.1fr 1.6fr 1fr;gap:12px;">
+        <div>
+          <label>Learner</label>
+          <input id="f-learner" placeholder="Name or SST email" value="${escapeHtml(state.filters.learner || '')}" />
+        </div>
+        <div>
+          <label>Search tickets</label>
+          <input id="f-q" placeholder="Subject / email / body / snippet" />
+        </div>
+        <div>
+          <label>Tag</label>
+          <input id="f-tag" placeholder="e.g. billing" />
+        </div>
+      </div>
       <div>
-        <label>Assignee</label>
-        <select id="f-assignee">
-          <option value="">All</option>
-          <option value="unassigned" ${state.filters.assignee_id === 'unassigned' ? 'selected' : ''}>Unassigned</option>
-          ${state.roster.map((r) => `<option value="${r.id}" ${String(state.filters.assignee_id) === String(r.id) ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
-        </select>
-      </div>
-      ` : ''}
-      <div>
-        <label>Status</label>
-        <select id="f-status">
-          <option value="">All</option>
-          <option value="unassigned">Unassigned</option>
-          <option value="assigned">Assigned</option>
-          <option value="replied">Replied</option>
-          <option value="closed">Closed</option>
-        </select>
-      </div>
-      <div>
-        <label>Automated</label>
-        <select id="f-automated">
-          <option value="">All</option>
-          <option value="false">Not automated</option>
-          <option value="true">Automated only</option>
-        </select>
-      </div>
-      <div>
-        <label>Tag</label>
-        <input id="f-tag" placeholder="e.g. billing" />
-      </div>
-      <div style="flex:1; min-width:200px;">
-        <label>Search</label>
-        <input id="f-q" placeholder="subject / from / body" />
-      </div>
-      <div>
-        <label>From date</label>
-        <input type="date" id="f-from" value="${escapeHtml(state.filters.from_date)}" />
-      </div>
-      <div>
-        <label>To date</label>
-        <input type="date" id="f-to" value="${escapeHtml(state.filters.to_date)}" />
+        <label>Date received</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+          <div><input type="date" id="f-from" value="${escapeHtml(state.filters.from_date)}" /></div>
+          <span class="small" style="padding-bottom:9px;">to</span>
+          <div><input type="date" id="f-to" value="${escapeHtml(state.filters.to_date)}" /></div>
+          <button type="button" class="secondary date-ticket-filter" data-range="today">Today</button>
+          <button type="button" class="secondary date-ticket-filter" data-range="7">Last 7 days</button>
+          <button type="button" class="secondary date-ticket-filter" data-range="30">Last 30 days</button>
+          <button type="button" class="secondary" id="clear-ticket-filters">Clear filters</button>
+        </div>
       </div>
     </div>
     <div id="ticket-table-wrap"><em>Loading tickets...</em></div>
@@ -324,11 +346,53 @@ async function renderTickets() {
     if (node) node.addEventListener('change', applyFiltersAndReload);
   });
   let debounce;
-  ['f-tag', 'f-q'].forEach((id) => {
-    el(id).addEventListener('input', () => {
+  ['f-tag', 'f-q', 'f-learner'].forEach((id) => {
+    const node = el(id);
+    if (!node) return;
+    node.addEventListener('input', () => {
       clearTimeout(debounce);
       debounce = setTimeout(applyFiltersAndReload, 350);
     });
+  });
+
+  document.querySelectorAll('.quick-ticket-filter').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      el('f-status').value = btn.dataset.status || '';
+      applyFiltersAndReload();
+    });
+  });
+
+  document.querySelectorAll('.date-ticket-filter').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const now = new Date();
+      const toIso = (d) => {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      };
+      const range = btn.dataset.range;
+      const from = new Date(now);
+      if (range === 'today') {
+        // same date
+      } else {
+        from.setDate(from.getDate() - Number(range));
+      }
+      el('f-from').value = toIso(from);
+      el('f-to').value = toIso(now);
+      applyFiltersAndReload();
+    });
+  });
+
+  el('clear-ticket-filters').addEventListener('click', () => {
+    el('f-mailbox').value = '';
+    if (el('f-assignee')) el('f-assignee').value = '';
+    el('f-status').value = '';
+    el('f-automated').value = '';
+    el('f-learner').value = '';
+    el('f-q').value = '';
+    el('f-tag').value = '';
+    el('f-from').value = '';
+    el('f-to').value = '';
+    applyFiltersAndReload();
   });
 
   await loadTickets();
@@ -341,6 +405,7 @@ function applyFiltersAndReload() {
     assignee_id: assigneeNode ? assigneeNode.value : '',
     status: el('f-status').value,
     automated: el('f-automated').value,
+    learner: el('f-learner').value,
     tag: el('f-tag').value,
     q: el('f-q').value,
     from_date: el('f-from').value,
