@@ -15,6 +15,7 @@ const state = {
   statsRange: 'month',
   page: 'tickets',
   openTicketId: null,
+  learnerEmail: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -193,6 +194,7 @@ function renderApp() {
   else if (state.page === 'mailboxes') renderMailboxes();
   else if (state.page === 'roster') renderRoster();
   else if (state.page === 'officehours') renderOfficeHours();
+  else if (state.page === 'learner') renderLearner();
   else renderTickets();
 }
 
@@ -368,7 +370,10 @@ function renderTicketTable() {
         <tr>
           <th>Received</th>
           <th>Mailbox</th>
-          <th>From</th>
+          <th>Learner Name</th>
+          <th>Learner Email</th>
+          <th>Raised</th>
+          <th>Open</th>
           <th>Subject</th>
           <th>Assignee</th>
           <th>Status</th>
@@ -383,6 +388,9 @@ function renderTicketTable() {
   `;
   document.querySelectorAll('tr.ticket-row').forEach((tr) => {
     tr.addEventListener('click', () => openTicket(Number(tr.dataset.id)));
+  });
+  document.querySelectorAll('.learner-link').forEach((link) => {
+    link.addEventListener('click', (e) => e.stopPropagation());
   });
 }
 
@@ -401,7 +409,12 @@ function rowHtml(t) {
     <tr class="ticket-row" data-id="${t.id}">
       <td>${fmtDate(t.received_at)}</td>
       <td>${escapeHtml(t.mailbox_email || '')}</td>
-      <td>${escapeHtml(t.from_address || '')}</td>
+      <td>
+        ${t.from_address ? `<a href="#learner?email=${encodeURIComponent(t.learner_email || extractEmail(t.from_address) || t.from_address)}" class="learner-link" data-learner-email="${escapeHtml(t.learner_email || extractEmail(t.from_address) || t.from_address)}">${escapeHtml(t.learner_name || 'Learner')}</a>` : '—'}
+      </td>
+      <td>${escapeHtml(t.learner_email || extractEmail(t.from_address) || '—')}</td>
+      <td>${t.learner_ticket_count != null ? t.learner_ticket_count : '—'}</td>
+      <td>${t.learner_open_count != null ? t.learner_open_count : '—'}</td>
       <td>${escapeHtml(t.subject || '(no subject)')}
         ${t.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </td>
@@ -411,6 +424,136 @@ function rowHtml(t) {
       <td>${t.tags.map((tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')}</td>
     </tr>
   `;
+}
+
+
+// ---------- Learner dashboard ----------
+
+function learnerSlaClass(percent) {
+  if (percent == null) return 'nil';
+  if (percent >= 90) return 'ok';
+  if (percent >= 75) return 'warn';
+  return 'bad';
+}
+
+function learnerStatusLabel(status) {
+  return ({
+    unassigned: 'Unassigned',
+    assigned: 'First response pending',
+    replied: 'Open',
+    closed: 'Closed',
+  })[status] || status;
+}
+
+async function renderLearner() {
+  const main = el('main');
+  const hashQuery = location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?') + 1) : '';
+  const params = new URLSearchParams(hashQuery);
+  const email = params.get('email') || '';
+  state.learnerEmail = email;
+
+  main.innerHTML = `
+    <button class="back-link" id="learner-back">← Back to Tickets</button>
+    <div id="learner-dashboard-wrap"><em>Loading learner details...</em></div>
+  `;
+  el('learner-back').addEventListener('click', () => { location.hash = 'tickets'; });
+
+  if (!email) {
+    el('learner-dashboard-wrap').innerHTML = '<div class="error-banner">Learner email is missing.</div>';
+    return;
+  }
+
+  try {
+    const data = await api(`/tickets/learner/${encodeURIComponent(email)}`);
+    const wrap = el('learner-dashboard-wrap');
+    const c = data.counts || {};
+    const status = data.by_status || {};
+    const sla = data.sla || {};
+    const mailbox = data.by_mailbox || [];
+    const maxMailbox = Math.max(1, ...mailbox.map((m) => Number(m.count || 0)));
+    const maxStatus = Math.max(1, ...Object.values(status).map(Number));
+    const slaCls = learnerSlaClass(sla.percent);
+
+    wrap.innerHTML = `
+      <div class="section-header">
+        <div>
+          <h2 style="margin:0;">Learner Dashboard</h2>
+          <div class="small" style="margin-top:4px;">${escapeHtml(data.learner.name || 'Learner')} · ${escapeHtml(data.learner.email || email)}</div>
+        </div>
+      </div>
+
+      <div class="tiles" style="margin-top:12px;">
+        <div class="tile"><p class="k">Total raised</p><p class="v">${c.total || 0}</p></div>
+        <div class="tile"><p class="k">Currently open</p><p class="v">${c.open || 0}</p></div>
+        <div class="tile"><p class="k">Resolved / Closed</p><p class="v">${c.closed || 0}</p></div>
+        <div class="tile"><p class="k">First response pending</p><p class="v">${c.first_response_pending || 0}</p></div>
+        <div class="tile"><p class="k">SLA</p><p class="v ${slaCls}">${sla.percent != null ? `${sla.percent}%` : '—'}</p><p class="c">${sla.total ? `${sla.met}/${sla.total} met` : 'No eligible tickets'}</p></div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="card stat-card">
+          <h3>Tickets by status</h3>
+          ${['unassigned','assigned','replied','closed'].map((key) => `
+            <div class="stat-row">
+              <span>${learnerStatusLabel(key)}</span>
+              <strong>${status[key] || 0}</strong>
+            </div>
+            <div style="height:6px;background:var(--line-soft);border-radius:4px;margin:-4px 0 9px;overflow:hidden;">
+              <div style="height:100%;width:${Math.round(((status[key] || 0) / maxStatus) * 100)}%;background:var(--brand);border-radius:4px;"></div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="card stat-card">
+          <h3>Tickets by mailbox</h3>
+          ${mailbox.length ? mailbox.map((m) => `
+            <div class="stat-row"><span>${escapeHtml(m.mailbox)}</span><strong>${m.count}</strong></div>
+            <div style="height:6px;background:var(--line-soft);border-radius:4px;margin:-4px 0 9px;overflow:hidden;">
+              <div style="height:100%;width:${Math.round((Number(m.count) / maxMailbox) * 100)}%;background:var(--brand);border-radius:4px;"></div>
+            </div>
+          `).join('') : '<p class="small">No mailbox history.</p>'}
+        </div>
+
+        <div class="card stat-card">
+          <h3>SLA details</h3>
+          <div class="stat-row"><span>Overall SLA</span><strong>${sla.percent != null ? `${sla.percent}%` : '—'}</strong></div>
+          <div class="stat-row"><span>Met</span><strong>${sla.met || 0}</strong></div>
+          <div class="stat-row"><span>Missed</span><strong>${sla.missed || 0}</strong></div>
+          <div class="stat-row"><span>First response target</span><strong>${sla.first_response_target_hours || 24}h</strong></div>
+          <div class="stat-row"><span>Resolution target</span><strong>${sla.resolution_target_hours || 72}h</strong></div>
+        </div>
+      </div>
+
+      <div class="dash-card" style="margin-top:16px;">
+        <div class="cap">All tickets for this learner (${data.tickets.length})</div>
+        ${data.tickets.length ? `
+        <div style="overflow:auto;">
+          <table class="dash">
+            <thead><tr><th>Received</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
+            <tbody>
+              ${data.tickets.map((t) => `
+                <tr class="link-row learner-ticket-row" data-id="${t.id}">
+                  <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
+                  <td>${escapeHtml(t.mailbox_email || '')}</td>
+                  <td>${escapeHtml(t.subject || '(no subject)')}</td>
+                  <td>${escapeHtml(t.assignee_name || '—')}</td>
+                  <td><span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></td>
+                  <td>${escapeHtml(t.tat && t.tat.first_response ? (t.tat.first_response.human || '—') : '—')}</td>
+                  <td>${escapeHtml(t.tat && t.tat.resolution ? (t.tat.resolution.human || '—') : '—')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>` : '<p class="small" style="padding:16px;">No tickets found for this learner.</p>'}
+      </div>
+    `;
+
+    wrap.querySelectorAll('.learner-ticket-row').forEach((row) => {
+      row.addEventListener('click', () => openTicket(Number(row.dataset.id)));
+    });
+  } catch (err) {
+    el('learner-dashboard-wrap').innerHTML = `<div class="error-banner">Failed to load learner details: ${escapeHtml(err.message)}</div>`;
+  }
 }
 
 // ---------- Ticket detail modal ----------

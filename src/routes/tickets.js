@@ -11,6 +11,237 @@ router.use(requireAuth);
 
 const PROVIDERS = { gmail: gmailAdapter };
 
+
+const FIRST_REPLY_TARGET_H = 24;
+const RESOLUTION_TARGET_H = 72;
+
+
+// ---------------------------------------------------------------------------
+// Live learner mapping from Google Sheets
+// ---------------------------------------------------------------------------
+// The backend reads the "Consolidated" tab directly from the online Google
+// Sheet. The sheet must be shared so that the deployed backend can read it
+// without a Google login.
+//
+// Google Sheet:
+// https://docs.google.com/spreadsheets/d/19mFOOpN1wqDoWMazVeQ5ni28mU2i9cICUvBPrzE7kRM/edit?gid=0
+//
+// Set LEARNER_SHEET_ID / LEARNER_SHEET_GID in Vercel if you ever move the
+// source sheet. Defaults below are the current sheet.
+const LEARNER_SHEET_ID =
+  process.env.LEARNER_SHEET_ID || '19mFOOpN1wqDoWMazVeQ5ni28mU2i9cICUvBPrzE7kRM';
+const LEARNER_SHEET_GID = process.env.LEARNER_SHEET_GID || '0';
+const LEARNER_SHEET_CACHE_MS = 5 * 60 * 1000;
+
+let learnerSheetCache = {
+  loadedAt: 0,
+  mapping: {},
+};
+
+function parseCsvLine(line) {
+  const cells = [];
+  let cell = '';
+  let quoted = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+
+    if (ch === '"') {
+      if (quoted && line[i + 1] === '"') {
+        cell += '"';
+        i += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (ch === ',' && !quoted) {
+      cells.push(cell);
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+
+  cells.push(cell);
+  return cells.map((v) => v.trim());
+}
+
+function parseGoogleSheetCsv(text) {
+  const lines = String(text || '')
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== '');
+
+  if (!lines.length) return {};
+
+  const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
+  const nameIndex = headers.findIndex((h) => h === 'name');
+  const emailIndex = headers.findIndex((h) => h === 'sst email');
+
+  if (nameIndex < 0 || emailIndex < 0) {
+    throw new Error(
+      `Google Sheet must contain columns "Name" and "SST Email". Found: ${headers.join(', ')}`
+    );
+  }
+
+  const mapping = {};
+
+  for (let i = 1; i < lines.length; i += 1) {
+    const cells = parseCsvLine(lines[i]);
+    const name = (cells[nameIndex] || '').trim();
+    const email = normalizeLearnerEmail(cells[emailIndex] || '');
+
+    if (!email) continue;
+
+    // First row wins if the same email appears more than once.
+    if (!mapping[email]) {
+      mapping[email] = {
+        name: name || email,
+      };
+    }
+  }
+
+  return mapping;
+}
+
+async function loadLearnerMapping() {
+  const now = Date.now();
+
+  if (
+    learnerSheetCache.loadedAt &&
+    now - learnerSheetCache.loadedAt < LEARNER_SHEET_CACHE_MS
+  ) {
+    return learnerSheetCache.mapping;
+  }
+
+  const url =
+    `https://docs.google.com/spreadsheets/d/${encodeURIComponent(LEARNER_SHEET_ID)}` +
+    `/gviz/tq?tqx=out:csv&gid=${encodeURIComponent(LEARNER_SHEET_GID)}`;
+
+  try {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Google Sheet returned HTTP ${response.status}`);
+    }
+
+    const text = await response.text();
+
+    // A private Google Sheet usually returns a Google login/error page
+    // instead of CSV. Fail clearly instead of silently treating it as data.
+    if (
+      /accounts\.google\.com|sign in to continue|request access|permission/i.test(text) &&
+      !/^"?Name"?\s*,/i.test(text.trim())
+    ) {
+      throw new Error(
+        'Google Sheet is not publicly readable. Share the sheet as "Anyone with the link" → Viewer.'
+      );
+    }
+
+    const mapping = parseGoogleSheetCsv(text);
+
+    learnerSheetCache = {
+      loadedAt: now,
+      mapping,
+    };
+
+    return mapping;
+  } catch (err) {
+    // Keep the last successful copy available during a temporary Google
+    // Sheets/network failure. On a first load, rethrow so the problem is clear.
+    if (learnerSheetCache.loadedAt && Object.keys(learnerSheetCache.mapping).length) {
+      console.error('Learner Google Sheet refresh failed; using last successful copy:', err);
+      return learnerSheetCache.mapping;
+    }
+
+    throw err;
+  }
+}
+
+function normalizeLearnerEmail(value) {
+  if (!value) return '';
+  const m = /<([^>]+)>/.exec(String(value));
+  let email = (m ? m[1] : String(value)).trim().toLowerCase().replace(/\s+/g, '');
+  const at = email.indexOf('@');
+  if (at > 0 && email.slice(at + 1).startsWith('ms.')) {
+    email = email.slice(0, at + 1) + email.slice(at + 4);
+  }
+  return email;
+}
+
+function learnerRecord(mapping, value) {
+  return mapping[normalizeLearnerEmail(value)] || null;
+}
+
+async function getVisibility(req, alias = 't') {
+  const clauses = [];
+  const params = [];
+
+  if (!req.user.is_admin) {
+    const fullAccessMailboxIds = await getFullAccessMailboxIds(req.user.id);
+    if (fullAccessMailboxIds.length) {
+      clauses.push(`(${alias}.assignee_id = ? OR ${alias}.mailbox_id = ANY(?))`);
+      params.push(req.user.id, fullAccessMailboxIds);
+    } else {
+      clauses.push(`${alias}.assignee_id = ?`);
+      params.push(req.user.id);
+    }
+  }
+
+  const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
+  if (accessibleMailboxIds !== null) {
+    if (accessibleMailboxIds.length === 0) {
+      clauses.push('1 = 0');
+    } else {
+      clauses.push(`${alias}.mailbox_id = ANY(?)`);
+      params.push(accessibleMailboxIds);
+    }
+  }
+
+  return {
+    sql: clauses.length ? `AND ${clauses.join(' AND ')}` : '',
+    params,
+  };
+}
+
+function buildLearnerCounts(rows) {
+  const counts = new Map();
+  for (const row of rows) {
+    const email = normalizeLearnerEmail(row.from_address);
+    if (!email) continue;
+    const current = counts.get(email) || { total: 0, open: 0, closed: 0, unassigned: 0, assigned: 0, replied: 0 };
+    current.total += 1;
+    if (row.status === 'closed') current.closed += 1;
+    else current.open += 1;
+    if (row.status === 'unassigned') current.unassigned += 1;
+    else if (row.status === 'assigned') current.assigned += 1;
+    else if (row.status === 'replied') current.replied += 1;
+    counts.set(email, current);
+  }
+  return counts;
+}
+
+function learnerSla(tickets) {
+  const eligible = tickets.filter((t) => t.first_received_at);
+  let met = 0;
+  const now = Date.now();
+  for (const t of eligible) {
+    const received = new Date(t.first_received_at).getTime();
+    const firstReply = t.first_replied_at ? new Date(t.first_replied_at).getTime() : null;
+    const resolution = t.closed_at ? new Date(t.closed_at).getTime() : (t.first_replied_at ? new Date(t.first_replied_at).getTime() : null);
+    const firstOk = firstReply != null ? firstReply - received <= FIRST_REPLY_TARGET_H * 3600000 : now - received <= FIRST_REPLY_TARGET_H * 3600000;
+    const resolutionOk = resolution != null ? resolution - received <= RESOLUTION_TARGET_H * 3600000 : now - received <= RESOLUTION_TARGET_H * 3600000;
+    if (firstOk && resolutionOk) met += 1;
+  }
+  return {
+    met,
+    total: eligible.length,
+    missed: eligible.length - met,
+    percent: eligible.length ? Math.round((met / eligible.length) * 100) : null,
+    first_response_target_hours: FIRST_REPLY_TARGET_H,
+    resolution_target_hours: RESOLUTION_TARGET_H,
+  };
+}
+
 async function logEvent(ticketId, actorId, eventType, detail) {
   await db
     .prepare(`INSERT INTO ticket_events (ticket_id, actor_id, event_type, detail) VALUES (?, ?, ?, ?)`)
@@ -162,7 +393,94 @@ router.get('/', async (req, res, next) => {
       )
       .all(...params);
 
-    res.json({ tickets: rows.map(serializeTicket) });
+    const visibility = await getVisibility(req, 't');
+    const learnerRows = await db
+      .prepare(`SELECT t.from_address, t.status FROM tickets t WHERE t.is_automated = 0 ${visibility.sql}`)
+      .all(...visibility.params);
+    const learnerCounts = buildLearnerCounts(learnerRows);
+    const learnerMapping = await loadLearnerMapping();
+
+    res.json({
+      tickets: rows.map((row) => {
+        const ticket = serializeTicket(row);
+        const key = normalizeLearnerEmail(row.from_address);
+        const mapping = learnerRecord(learnerMapping, row.from_address);
+        const counts = learnerCounts.get(key) || { total: 0, open: 0, closed: 0, unassigned: 0, assigned: 0, replied: 0 };
+        return {
+          ...ticket,
+          student_id: mapping ? mapping.student_id : null,
+          learner_name: mapping ? mapping.name : null,
+          learner_ticket_count: counts.total,
+          learner_open_count: counts.open,
+        };
+      }),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/tickets/learner/:email - learner history and cross-mailbox summary
+router.get('/learner/:email', async (req, res, next) => {
+  try {
+    const requestedEmail = decodeURIComponent(req.params.email || '');
+    const normalizedEmail = normalizeLearnerEmail(requestedEmail);
+    if (!normalizedEmail) return res.status(400).json({ error: 'Learner email is required' });
+
+    const learnerMapping = await loadLearnerMapping();
+    const mapping = learnerMapping[normalizedEmail] || null;
+
+    const visibility = await getVisibility(req, 't');
+    const rows = await db
+      .prepare(
+        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name
+         FROM tickets t
+         LEFT JOIN mailboxes m ON m.id = t.mailbox_id
+         LEFT JOIN team_members tm ON tm.id = t.assignee_id
+         WHERE t.is_automated = 0
+           AND (
+             LOWER(TRIM(t.from_address)) = ?
+             OR LOWER(TRIM(t.from_address)) LIKE '%<' || ? || '>%' 
+           )
+           ${visibility.sql}
+         ORDER BY t.first_received_at DESC, t.received_at DESC`
+      )
+      .all(normalizedEmail, normalizedEmail, ...visibility.params);
+
+    const tickets = rows.map(serializeTicket);
+    const byStatus = { unassigned: 0, assigned: 0, replied: 0, closed: 0 };
+    const byMailbox = new Map();
+    for (const t of tickets) {
+      if (Object.prototype.hasOwnProperty.call(byStatus, t.status)) byStatus[t.status] += 1;
+      const mailbox = t.mailbox_email || 'Unknown';
+      byMailbox.set(mailbox, (byMailbox.get(mailbox) || 0) + 1);
+    }
+
+    const total = tickets.length;
+    const closed = byStatus.closed;
+    const open = total - closed;
+    const sla = learnerSla(rows);
+
+    res.json({
+      learner: {
+        email: requestedEmail || normalizedEmail,
+        student_id: mapping ? mapping.student_id : null,
+        name: mapping ? mapping.name : null,
+        status: mapping ? mapping.status : null,
+      },
+      counts: {
+        total,
+        open,
+        closed,
+        unassigned: byStatus.unassigned,
+        first_response_pending: byStatus.assigned,
+        replied: byStatus.replied,
+      },
+      sla,
+      by_status: byStatus,
+      by_mailbox: [...byMailbox.entries()].map(([mailbox, count]) => ({ mailbox, count })),
+      tickets,
+    });
   } catch (err) {
     next(err);
   }
