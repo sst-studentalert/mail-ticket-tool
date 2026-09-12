@@ -29,19 +29,58 @@ router.use(requireAuth, requireAdmin);
 
 const STATUSES = ['unassigned', 'assigned', 'replied', 'closed'];
 
-// "First response" = earliest of assigned_at / first_replied_at. Postgres
-// has no scalar multi-arg MIN() like SQLite does - LEAST() is the
-// Postgres equivalent for "smaller of these two values" (as opposed to
-// MIN(), which in Postgres is only an aggregate over rows).
-const FIRST_RESPONSE_EXPR = `(
-  CASE
-    WHEN assigned_at IS NOT NULL AND first_replied_at IS NOT NULL
-      THEN LEAST(assigned_at, first_replied_at)
-    ELSE COALESCE(assigned_at, first_replied_at)
-  END
-)`;
+// "First response" = the first actual outbound reply. Assignment is NOT a
+// response, so assigned_at must not be used for FRT.
+const FIRST_RESPONSE_EXPR = `first_replied_at`;
 // "Resolution" = closed_at if present, else first_replied_at.
 const RESOLUTION_EXPR = `COALESCE(closed_at, first_replied_at)`;
+
+// SLA targets, in wall-clock hours. A ticket is SLA-compliant only when both
+// first-response and resolution are within their respective targets. If a
+// milestone has not happened yet, it is considered compliant only while its
+// deadline has not passed; once the deadline passes, it becomes an SLA miss.
+const FIRST_REPLY_TARGET_H = 24;
+const RESOLUTION_TARGET_H = 72;
+
+function slaPassExpr() {
+  return `
+    (
+      (
+        (first_replied_at IS NOT NULL AND EXTRACT(EPOCH FROM (first_replied_at - first_received_at)) <= ${FIRST_REPLY_TARGET_H * 3600})
+        OR
+        (first_replied_at IS NULL AND CURRENT_TIMESTAMP <= first_received_at + INTERVAL '${FIRST_REPLY_TARGET_H} hours')
+      )
+      AND
+      (
+        (COALESCE(closed_at, first_replied_at) IS NOT NULL
+          AND EXTRACT(EPOCH FROM (COALESCE(closed_at, first_replied_at) - first_received_at)) <= ${RESOLUTION_TARGET_H * 3600})
+        OR
+        (COALESCE(closed_at, first_replied_at) IS NULL
+          AND CURRENT_TIMESTAMP <= first_received_at + INTERVAL '${RESOLUTION_TARGET_H} hours')
+      )
+    )`;
+}
+
+async function slaFor(extraWhere, extraParams) {
+  const passExpr = slaPassExpr();
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              COUNT(*) FILTER (WHERE ${passExpr}) AS met
+       FROM tickets
+       WHERE is_automated = 0 AND first_received_at IS NOT NULL
+         ${dateSql} ${mailboxSql} ${extraWhere}`
+    )
+    .get(...dateParams, ...mailboxParams, ...extraParams);
+  const total = Number(row.total || 0);
+  const met = Number(row.met || 0);
+  return {
+    met,
+    total,
+    missed: total - met,
+    percent: total ? Math.round((met / total) * 100) : null,
+  };
+}
 
 router.get('/', async (req, res, next) => {
   try {
@@ -112,8 +151,9 @@ router.get('/', async (req, res, next) => {
 
       const firstResponseTat = await tatFor(FIRST_RESPONSE_EXPR, 'AND assignee_id = ?', [member.id]);
       const resolutionTat = await tatFor(RESOLUTION_EXPR, 'AND assignee_id = ?', [member.id]);
+      const sla = await slaFor('AND assignee_id = ?', [member.id]);
 
-      perAssignee.push({ member, counts, tat: { first_response: firstResponseTat, resolution: resolutionTat } });
+      perAssignee.push({ member, counts, tat: { first_response: firstResponseTat, resolution: resolutionTat }, sla });
     }
 
     const unassignedCounts = {};
@@ -162,6 +202,8 @@ router.get('/', async (req, res, next) => {
       resolution: await tatFor(RESOLUTION_EXPR, '', []),
     };
 
+    const overallSla = await slaFor('', []);
+
     // Daily TAT trend, for the Dashboard's "TAT over time" chart - one row
     // per calendar day (by first_received_at) with that day's average
     // first-response/resolution TAT (in seconds; the frontend converts to
@@ -200,6 +242,7 @@ router.get('/', async (req, res, next) => {
       total_tickets: totalTickets,
       per_mailbox: perMailbox,
       tat: overallTat,
+      sla: overallSla,
       tat_trend: tatTrend,
       mailbox_filter: { options: scope.options, included: scope.included, excluded: scope.excluded },
 

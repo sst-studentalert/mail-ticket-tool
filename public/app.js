@@ -1019,7 +1019,7 @@ const RANGES = {
   custom: { label: 'Custom', days: null, group: 'week' },
 };
 
-// Turnaround targets, in hours. Drive the amber/red dots in the table.
+// SLA targets, in wall-clock hours. Drive the SLA calculation and TAT dots.
 // Move to app_settings when different mailboxes need different numbers.
 const FIRST_REPLY_TARGET_H = 24;
 const RESOLUTION_TARGET_H = 72;
@@ -1113,6 +1113,12 @@ function tatCell(tat, targetHours) {
   return `<td class="${cls}"><span class="dot ${cls || 'ok'}"></span>${escapeHtml(tat.avg_human)}</td>`;
 }
 
+function slaCell(sla) {
+  if (!sla || sla.percent == null) return '<td class="nil">—</td>';
+  const cls = sla.percent >= 90 ? 'ok' : sla.percent >= 75 ? 'warn' : 'bad';
+  return `<td class="${cls}" title="${sla.met} of ${sla.total} tickets met both SLA targets"><span class="dot ${cls}"></span>${sla.percent}%<span class="small" style="margin-left:5px;">(${sla.met}/${sla.total})</span></td>`;
+}
+
 // ------------------------------------------------------------------ dashboard
 
 async function renderStats() {
@@ -1147,6 +1153,9 @@ async function renderStatsData() {
     return acc;
   }, { assigned: 0, replied: 0, closed: 0, total: 0 });
 
+  // Top tiles are status totals. Include the unassigned bucket for replied/closed,
+  // while keeping the per-person table based only on assigned people.
+
   root.innerHTML = `
     <div class="page-head">
       <div>
@@ -1166,17 +1175,18 @@ async function renderStatsData() {
 
     <div class="tiles">
       ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>` : ''}
-      <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.total}</p></div>
+      <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.unassigned}</p></div>
       <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
-      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied}</p></div>
-      <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed}</p></div>
+      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + data.unassigned.replied}</p></div>
+      <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed + data.unassigned.closed}</p></div>
+      <div class="tile"><p class="k">Team SLA</p><p class="v">${data.sla && data.sla.percent != null ? `${data.sla.percent}%` : '—'}</p><p class="c">${data.sla ? `${data.sla.met}/${data.sla.total} met` : ''}</p></div>
     </div>
 
     <div class="dash-card">
       <table class="dash">
         <thead><tr>
           <th>Person</th><th>Assigned</th><th>Replied</th><th>Closed</th>
-          <th>Total</th><th>1st response</th><th>Resolution</th>
+          <th>Total</th><th>SLA</th><th>1st response</th><th>Resolution</th>
         </tr></thead>
         <tbody>
           ${people.map((p) => `
@@ -1194,6 +1204,7 @@ async function renderStatsData() {
                 ${p.counts.total}
                 <span class="share"><span style="width:${maxTotal ? Math.round((p.counts.total / maxTotal) * 100) : 0}%"></span></span>
               </td>
+              ${slaCell(p.sla)}
               ${tatCell(p.tat.first_response, FIRST_REPLY_TARGET_H)}
               ${tatCell(p.tat.resolution, RESOLUTION_TARGET_H)}
             </tr>`).join('')}
@@ -1204,6 +1215,7 @@ async function renderStatsData() {
           <td>${cell(teamTotals.replied, teamTotals.total)}</td>
           <td>${cell(teamTotals.closed, teamTotals.total)}</td>
           <td>${teamTotals.total}</td>
+          ${slaCell(data.sla)}
           <td>${data.tat.first_response.avg_human || '—'}</td>
           <td>${data.tat.resolution.avg_human || '—'}</td>
         </tr></tfoot>
