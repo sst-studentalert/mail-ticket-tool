@@ -32,11 +32,10 @@ const RESOLUTION_TARGET_H = 72;
 // ---------------------------------------------------------------------------
 // IMPORTANT: EMAIL IS THE LOOKUP KEY.
 //
-// The Consolidated tab is the master list of learner Name + SST Email.
-// The batch tabs contain the additional student details (Student ID, parent
-// emails, guardian email, etc.). We first match a batch row TO THE LEARNER'S
-// EMAIL from Consolidated. We then return Student ID and contact details from
-// that matched row.
+// ALL learner information is read from the Consolidated tab (gid 0).
+// The tab may contain repeated/side-by-side student-data blocks. Each block
+// is parsed independently so name, Student ID and parent/guardian fields
+// always come from the same block as the learner email.
 //
 // We NEVER use Student ID to find a ticket. A ticket is matched by sender email.
 const LEARNER_SHEET_ID =
@@ -49,29 +48,50 @@ let learnerSheetCache = {
   mapping: {},
 };
 
-function parseCsvLine(line) {
-  const cells = [];
+function parseCsvRecords(text) {
+  const records = [];
+  const source = String(text || '').replace(/^\uFEFF/, '');
+  let row = [];
   let cell = '';
   let quoted = false;
 
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+
     if (ch === '"') {
-      if (quoted && line[i + 1] === '"') {
+      if (quoted && source[i + 1] === '"') {
         cell += '"';
         i += 1;
       } else {
         quoted = !quoted;
       }
-    } else if (ch === ',' && !quoted) {
-      cells.push(cell);
-      cell = '';
-    } else {
-      cell += ch;
+      continue;
     }
+
+    if (ch === ',' && !quoted) {
+      row.push(cell.trim());
+      cell = '';
+      continue;
+    }
+
+    if ((ch === '\n' || ch === '\r') && !quoted) {
+      if (ch === '\r' && source[i + 1] === '\n') i += 1;
+      row.push(cell.trim());
+      cell = '';
+      if (row.some((value) => String(value).trim() !== '')) records.push(row);
+      row = [];
+      continue;
+    }
+
+    cell += ch;
   }
-  cells.push(cell);
-  return cells.map((v) => v.trim());
+
+  if (cell !== '' || row.length) {
+    row.push(cell.trim());
+    if (row.some((value) => String(value).trim() !== '')) records.push(row);
+  }
+
+  return records;
 }
 
 function normalizeSheetHeader(value) {
@@ -83,9 +103,9 @@ function normalizeSheetHeader(value) {
     .toLowerCase();
 }
 
-function findHeaderIndex(headers, patterns, start = 0) {
+function findHeaderIndex(headers, patterns, start = 0, end = headers.length) {
   return headers.findIndex((h, i) =>
-    i >= start && patterns.some((p) => h === p || h.includes(p))
+    i >= start && i < end && patterns.some((p) => h === p || h.includes(p))
   );
 }
 
@@ -106,17 +126,10 @@ function firstNonEmptyCell(cells, indexes) {
 }
 
 function csvRows(text) {
-  const lines = String(text || '')
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== '');
-  if (!lines.length) return { headers: [], rows: [] };
-  const rawHeaders = parseCsvLine(lines[0]);
-  const headers = rawHeaders.map(normalizeSheetHeader);
-  return {
-    headers,
-    rows: lines.slice(1).map(parseCsvLine),
-  };
+  const records = parseCsvRecords(text);
+  if (!records.length) return { headers: [], rows: [] };
+  const headers = records[0].map(normalizeSheetHeader);
+  return { headers, rows: records.slice(1) };
 }
 
 function makeEmptyLearnerRecord(email, name = '') {
@@ -133,35 +146,94 @@ function makeEmptyLearnerRecord(email, name = '') {
 function addLearnerContact(record, email, relationship, name) {
   const normalized = normalizeLearnerEmail(email);
   if (!normalized) return;
-  if (!record.contacts.some((c) => c.email === normalized)) {
-    record.contacts.push({
-      email: normalized,
-      relationship,
-      name: name || relationship,
-    });
+  const existing = record.contacts.find((c) => c.email === normalized);
+  if (existing) {
+    if ((!existing.name || existing.name === existing.relationship) && name) existing.name = String(name).trim();
+    return;
   }
-  if (!record.contact_emails.includes(normalized)) {
-    record.contact_emails.push(normalized);
-  }
+  record.contacts.push({
+    email: normalized,
+    relationship,
+    name: String(name || relationship).trim(),
+  });
+  if (!record.contact_emails.includes(normalized)) record.contact_emails.push(normalized);
 }
 
 function parseConsolidated(text) {
   const { headers, rows } = csvRows(text);
   if (!headers.length) return {};
 
-  const nameIndex = findHeaderIndex(headers, ['name']);
-  const emailIndex = findHeaderIndex(headers, ['sst email', 'email address']);
-  if (emailIndex < 0) {
-    throw new Error('Consolidated sheet must contain an SST Email / Email Address column.');
+  const emailIndexes = findHeaderIndexes(headers, ['email address', 'sst email']);
+  if (!emailIndexes.length) {
+    throw new Error('Consolidated sheet must contain an Email Address or SST Email column.');
   }
 
+  // The Consolidated sheet is allowed to contain several complete student-data
+  // blocks side-by-side. Each block starts with Email Address. Fields must be
+  // read from the SAME block as that email; otherwise parent details/student ID
+  // from another block can accidentally be attached to the wrong learner.
+  const blockStarts = [...emailIndexes].sort((a, b) => a - b);
   const mapping = {};
+
   for (const cells of rows) {
-    const email = normalizeLearnerEmail(cells[emailIndex] || '');
-    if (!email) continue;
-    const name = (nameIndex >= 0 ? cells[nameIndex] : '').trim() || email;
-    if (!mapping[email]) mapping[email] = makeEmptyLearnerRecord(email, name);
+    for (let b = 0; b < blockStarts.length; b += 1) {
+      const start = blockStarts[b];
+      const end = b + 1 < blockStarts.length ? blockStarts[b + 1] : headers.length;
+
+      const emailIndex = findHeaderIndex(headers, ['email address', 'sst email'], start, end);
+      if (emailIndex < 0) continue;
+
+      const email = normalizeLearnerEmail(cells[emailIndex] || '');
+      if (!email) continue;
+
+      const nameIndex = findHeaderIndex(headers, ['full name (as per aadhar)', 'student name', 'name'], start, end);
+      const studentIdIndex = findHeaderIndex(headers, ['student id', 'student. id', 'student  id'], start, end);
+      const fatherNameIndex = findHeaderIndex(headers, ["father's name", 'father name'], start, end);
+      const fatherEmailIndex = findHeaderIndex(headers, ["father's email id", 'father email'], start, end);
+      const motherNameIndex = findHeaderIndex(headers, ["mother's name", 'mother name'], start, end);
+      const motherEmailIndex = findHeaderIndex(headers, ["mother's email id", 'mother email'], start, end);
+      const guardianNameIndex = findHeaderIndex(headers, ["local guardian's name", 'guardian name'], start, end);
+      const guardianEmailIndex = findHeaderIndex(headers, ["local guardian's email id", 'local guardian email', 'guardian email'], start, end);
+
+      const name = nameIndex >= 0 ? String(cells[nameIndex] || '').trim() : '';
+      if (!mapping[email]) mapping[email] = makeEmptyLearnerRecord(email, name || email);
+      const record = mapping[email];
+
+      if (name && (!record.name || record.name === record.learner_email)) record.name = name;
+
+      const studentId = studentIdIndex >= 0 ? String(cells[studentIdIndex] || '').trim() : '';
+      if (studentId && !record.student_id) record.student_id = studentId;
+
+      const fatherName = fatherNameIndex >= 0 ? String(cells[fatherNameIndex] || '').trim() : '';
+      const fatherEmail = fatherEmailIndex >= 0 ? cells[fatherEmailIndex] : '';
+      addLearnerContact(record, fatherEmail, 'Father', fatherName);
+
+      const motherName = motherNameIndex >= 0 ? String(cells[motherNameIndex] || '').trim() : '';
+      const motherEmail = motherEmailIndex >= 0 ? cells[motherEmailIndex] : '';
+      addLearnerContact(record, motherEmail, 'Mother', motherName);
+
+      const guardianName = guardianNameIndex >= 0 ? String(cells[guardianNameIndex] || '').trim() : '';
+      const guardianEmail = guardianEmailIndex >= 0 ? cells[guardianEmailIndex] : '';
+      addLearnerContact(record, guardianEmail, 'Guardian', guardianName);
+    }
   }
+
+  // Backward compatibility for a simple Name | SST Email sheet where the
+  // name column occurs before the email column and therefore sits outside the
+  // email block above.
+  if (!Object.keys(mapping).length) {
+    const nameIndex = findHeaderIndex(headers, ['name']);
+    const emailIndex = findHeaderIndex(headers, ['sst email', 'email address']);
+    if (emailIndex >= 0) {
+      for (const cells of rows) {
+        const email = normalizeLearnerEmail(cells[emailIndex] || '');
+        if (!email) continue;
+        const name = nameIndex >= 0 ? String(cells[nameIndex] || '').trim() : '';
+        mapping[email] = makeEmptyLearnerRecord(email, name || email);
+      }
+    }
+  }
+
   return mapping;
 }
 
@@ -174,6 +246,8 @@ function buildContactLookup(mapping) {
           ...record,
           relationship: contact.relationship,
           sender_name: contact.name,
+          contacts: record.contacts,
+          contact_emails: record.contact_emails,
         };
       }
     }
@@ -214,63 +288,18 @@ async function loadLearnerMapping() {
       throw new Error('Google Sheet is not publicly readable. Share the sheet as Anyone with the link → Viewer.');
     }
 
-    const { headers, rows } = csvRows(consolidatedText);
-    if (!headers.length) throw new Error('Consolidated sheet returned no headers.');
-
-    // The Consolidated tab may contain repeated blocks of the same headers.
-    // Do NOT assume the first matching column contains the value. For every
-    // field, scan ALL matching columns and take the first non-empty value.
-    const emailIndexes = findHeaderIndexes(headers, ['email address', 'sst email']);
-    if (!emailIndexes.length) throw new Error('Consolidated sheet must contain Email Address or SST Email.');
-
-    const nameIndexes = findHeaderIndexes(headers, ['full name (as per aadhar)', 'student name', 'name']);
-    const studentIdIndexes = findHeaderIndexes(headers, ['student id', 'student. id', 'student  id']);
-    const fatherNameIndexes = findHeaderIndexes(headers, ["father's name", 'father name']);
-    const fatherEmailIndexes = findHeaderIndexes(headers, ["father's email id", 'father email']);
-    const motherNameIndexes = findHeaderIndexes(headers, ["mother's name", 'mother name']);
-    const motherEmailIndexes = findHeaderIndexes(headers, ["mother's email id", 'mother email']);
-    const guardianNameIndexes = findHeaderIndexes(headers, ["local guardian's name", 'guardian name']);
-    const guardianEmailIndexes = findHeaderIndexes(headers, ["local guardian's email id", 'local guardian email', 'guardian email']);
-
-    const mapping = {};
-    for (const cells of rows) {
-      const email = normalizeLearnerEmail(firstNonEmptyCell(cells, emailIndexes));
-      if (!email) continue;
-
-      if (!mapping[email]) mapping[email] = makeEmptyLearnerRecord(email);
-      const record = mapping[email];
-
-      const name = firstNonEmptyCell(cells, nameIndexes);
-      if (name) record.name = name;
-
-      const studentId = firstNonEmptyCell(cells, studentIdIndexes);
-      if (studentId) record.student_id = studentId;
-
-      const fatherName = firstNonEmptyCell(cells, fatherNameIndexes);
-      const fatherEmail = firstNonEmptyCell(cells, fatherEmailIndexes);
-      addLearnerContact(record, fatherEmail, 'Father', fatherName);
-
-      const motherName = firstNonEmptyCell(cells, motherNameIndexes);
-      const motherEmail = firstNonEmptyCell(cells, motherEmailIndexes);
-      addLearnerContact(record, motherEmail, 'Mother', motherName);
-
-      const guardianName = firstNonEmptyCell(cells, guardianNameIndexes);
-      const guardianEmail = firstNonEmptyCell(cells, guardianEmailIndexes);
-      addLearnerContact(record, guardianEmail, 'Guardian', guardianName);
-    }
-
+    const mapping = parseConsolidated(consolidatedText);
     if (!Object.keys(mapping).length) throw new Error('No learner rows were found in Consolidated.');
 
     const contactLookup = buildContactLookup(mapping);
     learnerSheetCache = { loadedAt: now, mapping: contactLookup };
-    console.log(`Loaded ${Object.keys(mapping).length} learner rows from Consolidated with duplicate-column support.`);
+    console.log(`Loaded ${Object.keys(mapping).length} learner records from Consolidated using block-safe mapping.`);
     return contactLookup;
   } catch (err) {
     console.error('Learner Google Sheet lookup failed:', err);
     return learnerSheetCache.mapping || {};
   }
 }
-
 
 function normalizeLearnerEmail(value) {
   if (!value) return '';

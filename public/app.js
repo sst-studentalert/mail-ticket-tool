@@ -477,6 +477,10 @@ async function renderLearner() {
 
   try {
     const data = await api(`/tickets/learner/${encodeURIComponent(email)}`);
+    // The URL can originate from a parent/guardian ticket. Always switch to
+    // the canonical learner email returned by the backend for the dashboard.
+    const canonicalLearnerEmail = (data.learner && data.learner.email) || email;
+    state.learnerEmail = canonicalLearnerEmail;
     const wrap = el('learner-dashboard-wrap');
     const c = data.counts || {};
     const status = data.by_status || {};
@@ -490,7 +494,7 @@ async function renderLearner() {
       <div class="section-header">
         <div>
           <h2 style="margin:0;">Learner Dashboard</h2>
-          <div class="small" style="margin-top:4px;">${escapeHtml(data.learner.name || 'Learner')} · ${escapeHtml(data.learner.email || email)}</div>
+          <div class="small" style="margin-top:4px;">${escapeHtml(data.learner.name || 'Learner')} · ${escapeHtml(canonicalLearnerEmail)}</div>
         </div>
         <div class="small">Student ID: <strong>${escapeHtml(data.learner.student_id || 'Not mapped')}</strong></div>
       </div>
@@ -498,7 +502,7 @@ async function renderLearner() {
       <div class="card" style="margin-top:12px;">
         <h3 style="margin-top:0;">Registered Contacts</h3>
         <div class="learner-contacts-grid">
-          ${(data.learner.contacts && data.learner.contacts.length ? data.learner.contacts : [{relationship:'Learner', name:data.learner.name || 'Learner', email:data.learner.email || email}]).map((contact) => `
+          ${(data.learner.contacts && data.learner.contacts.length ? data.learner.contacts : [{relationship:'Learner', name:data.learner.name || 'Learner', email:canonicalLearnerEmail}]).map((contact) => `
             <div class="learner-contact-card">
               <div class="small">${escapeHtml(contact.relationship || 'Contact')}</div>
               <strong>${escapeHtml(contact.name || contact.relationship || 'Contact')}</strong>
