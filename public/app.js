@@ -1,19 +1,3 @@
-REPLACE YOUR FRONTEND app.js WITH THIS ENTIRE FILE
-
-This version keeps the existing ticket filters, learner name/email linking, learner dashboard and SLA features, and adds learner-ticket merging.
-
-Merge workflow:
-- Open a learner by clicking Learner Name.
-- On Learner Dashboard, select 2 or more unmerged tickets.
-- Click Merge selected.
-- Choose the primary ticket (oldest is recommended by default).
-- Confirm.
-- Secondary tickets remain preserved and show as Merged -> #primary.
-- The primary ticket shows the merged tickets.
-- Opening a merged secondary ticket shows a link back to the primary.
-
-IMPORTANT: Copy everything below into app.js.
-
 // Plain vanilla-JS single-page app. No build step, no framework - just
 // fetch() against the REST API and manual DOM rendering. Keep it this way;
 // the goal is that anyone comfortable with basic JS can read and modify it.
