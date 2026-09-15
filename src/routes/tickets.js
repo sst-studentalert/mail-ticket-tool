@@ -32,9 +32,11 @@ const RESOLUTION_TARGET_H = 72;
 // ---------------------------------------------------------------------------
 // IMPORTANT: EMAIL IS THE LOOKUP KEY.
 //
-// The Consolidated tab is the single source of learner data. It is populated
-// with IMPORTRANGE and contains learner, Student ID, parent and guardian
-// columns in the same row. We match tickets to this sheet by EMAIL only.
+// The Consolidated tab is the master list of learner Name + SST Email.
+// The batch tabs contain the additional student details (Student ID, parent
+// emails, guardian email, etc.). We first match a batch row TO THE LEARNER'S
+// EMAIL from Consolidated. We then return Student ID and contact details from
+// that matched row.
 //
 // We NEVER use Student ID to find a ticket. A ticket is matched by sender email.
 const LEARNER_SHEET_ID =
@@ -147,55 +149,6 @@ function parseConsolidated(text) {
   return mapping;
 }
 
-function enrichFromBatchSheet(mapping, text, sheetName) {
-  const { headers, rows } = csvRows(text);
-  if (!headers.length) return;
-
-  // The primary key for enrichment is the learner's email.
-  const emailIndex = findHeaderIndex(headers, ['email address', 'sst email']);
-  if (emailIndex < 0) {
-    console.warn(`Learner detail sheet ${sheetName} has no learner email column; skipped.`);
-    return;
-  }
-
-  const nameIndex = findHeaderIndex(headers, ['full name (as per aadhar)', 'student name', 'name']);
-  const studentIdIndex = findHeaderIndex(headers, ['student id', 'student. id', 'student  id']);
-  const fatherNameIndex = findHeaderIndex(headers, ["father's name", 'father name']);
-  const fatherEmailIndex = findHeaderIndex(headers, ["father's email id", 'father email']);
-  const motherNameIndex = findHeaderIndex(headers, ["mother's name", 'mother name']);
-  const motherEmailIndex = findHeaderIndex(headers, ["mother's email id", 'mother email']);
-  const guardianNameIndex = findHeaderIndex(headers, ["local guardian's name", 'guardian name']);
-  const guardianEmailIndex = findHeaderIndex(headers, ["local guardian's email id", 'local guardian email', 'guardian email']);
-
-  for (const cells of rows) {
-    const learnerEmail = normalizeLearnerEmail(cells[emailIndex] || '');
-    if (!learnerEmail) continue;
-
-    // ONLY enrich a learner that already exists in Consolidated.
-    // This keeps Consolidated as the source of learner identity.
-    const record = mapping[learnerEmail];
-    if (!record) continue;
-
-    const studentId = studentIdIndex >= 0 ? String(cells[studentIdIndex] || '').trim() : '';
-    if (studentId && !record.student_id) record.student_id = studentId;
-
-    const batchName = nameIndex >= 0 ? String(cells[nameIndex] || '').trim() : '';
-    if (batchName && (!record.name || record.name === learnerEmail)) record.name = batchName;
-
-    const fatherName = fatherNameIndex >= 0 ? String(cells[fatherNameIndex] || '').trim() : '';
-    const fatherEmail = fatherEmailIndex >= 0 ? cells[fatherEmailIndex] : '';
-    addLearnerContact(record, fatherEmail, 'Father', fatherName);
-
-    const motherName = motherNameIndex >= 0 ? String(cells[motherNameIndex] || '').trim() : '';
-    const motherEmail = motherEmailIndex >= 0 ? cells[motherEmailIndex] : '';
-    addLearnerContact(record, motherEmail, 'Mother', motherName);
-
-    const guardianName = guardianNameIndex >= 0 ? String(cells[guardianNameIndex] || '').trim() : '';
-    const guardianEmail = guardianEmailIndex >= 0 ? cells[guardianEmailIndex] : '';
-    addLearnerContact(record, guardianEmail, 'Guardian', guardianName);
-  }
-}
-
 function buildContactLookup(mapping) {
   const lookup = {};
   for (const record of Object.values(mapping)) {
@@ -216,11 +169,22 @@ async function fetchGoogleSheetCsvByGid(gid) {
   const url =
     `https://docs.google.com/spreadsheets/d/${encodeURIComponent(LEARNER_SHEET_ID)}` +
     `/gviz/tq?tqx=out:csv&gid=${encodeURIComponent(gid)}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Google Sheet returned HTTP ${response.status}`);
-  return response.text();
-}
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Google Sheet returned HTTP ${response.status}`);
+    return response.text();
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error('Google Sheet request timed out after 8 seconds.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function loadLearnerMapping() {
   const now = Date.now();
@@ -229,41 +193,61 @@ async function loadLearnerMapping() {
   }
 
   try {
-    // Step 1: Consolidated gives us the learner identity by EMAIL.
+    // ALL learner information is in the Consolidated tab.
+    // The Consolidated tab is populated using IMPORTRANGE.
     const consolidatedText = await fetchGoogleSheetCsvByGid(LEARNER_SHEET_GID);
-    if (/accounts\.google\.com|sign in to continue|request access|permission/i.test(consolidatedText)) {
-      throw new Error('Google Sheet is not publicly readable. Share the sheet as "Anyone with the link" → Viewer.');
+
+    if (/accounts\.google\.com|sign in to continue|request access|permission denied/i.test(consolidatedText)) {
+      throw new Error('Google Sheet is not publicly readable. Share the sheet as Anyone with the link → Viewer.');
     }
 
-    const mapping = parseConsolidated(consolidatedText);
-    // If the Consolidated tab itself contains the detailed columns, enrich
-    // from it too. If it only contains Name + SST Email, this safely does nothing.
-    enrichFromBatchSheet(mapping, consolidatedText, 'Consolidated');
-    if (!Object.keys(mapping).length) {
-      throw new Error('No learner rows were found in the Consolidated sheet.');
+    const { headers, rows } = csvRows(consolidatedText);
+    if (!headers.length) throw new Error('Consolidated sheet returned no headers.');
+
+    const emailIndex = findHeaderIndex(headers, ['email address', 'sst email']);
+    if (emailIndex < 0) throw new Error('Consolidated sheet must contain Email Address or SST Email.');
+
+    const nameIndex = findHeaderIndex(headers, ['full name (as per aadhar)', 'student name', 'name']);
+    const studentIdIndex = findHeaderIndex(headers, ['student id', 'student. id', 'student  id']);
+    const fatherNameIndex = findHeaderIndex(headers, ["father's name", 'father name']);
+    const fatherEmailIndex = findHeaderIndex(headers, ["father's email id", 'father email']);
+    const motherNameIndex = findHeaderIndex(headers, ["mother's name", 'mother name']);
+    const motherEmailIndex = findHeaderIndex(headers, ["mother's email id", 'mother email']);
+    const guardianNameIndex = findHeaderIndex(headers, ["local guardian's name", 'guardian name']);
+    const guardianEmailIndex = findHeaderIndex(headers, ["local guardian's email id", 'local guardian email', 'guardian email']);
+
+    const mapping = {};
+    for (const cells of rows) {
+      const email = normalizeLearnerEmail(cells[emailIndex] || '');
+      if (!email) continue;
+
+      if (!mapping[email]) mapping[email] = makeEmptyLearnerRecord(email);
+      const record = mapping[email];
+
+      const name = nameIndex >= 0 ? String(cells[nameIndex] || '').trim() : '';
+      if (name) record.name = name;
+
+      const studentId = studentIdIndex >= 0 ? String(cells[studentIdIndex] || '').trim() : '';
+      if (studentId) record.student_id = studentId;
+
+      addLearnerContact(record, fatherEmailIndex >= 0 ? cells[fatherEmailIndex] : '', 'Father', fatherNameIndex >= 0 ? cells[fatherNameIndex] : '');
+      addLearnerContact(record, motherEmailIndex >= 0 ? cells[motherEmailIndex] : '', 'Mother', motherNameIndex >= 0 ? cells[motherNameIndex] : '');
+      addLearnerContact(record, guardianEmailIndex >= 0 ? cells[guardianEmailIndex] : '', 'Guardian', guardianNameIndex >= 0 ? cells[guardianNameIndex] : '');
     }
 
-    // All learner data now lives in the Consolidated tab.
-    // That tab is populated with IMPORTRANGE, so there is no need to fetch
-    // any separate Batch tabs. Student ID and parent/guardian details are
-    // read directly from the same Consolidated row.
+    if (!Object.keys(mapping).length) throw new Error('No learner rows were found in Consolidated.');
 
-    // Build the ticket lookup using EMAILS only.
     const contactLookup = buildContactLookup(mapping);
-
-    learnerSheetCache = {
-      loadedAt: now,
-      mapping: contactLookup,
-    };
+    learnerSheetCache = { loadedAt: now, mapping: contactLookup };
+    console.log(`Loaded ${Object.keys(mapping).length} learner rows from Consolidated.`);
     return contactLookup;
   } catch (err) {
-    if (learnerSheetCache.loadedAt && Object.keys(learnerSheetCache.mapping).length) {
-      console.error('Learner Google Sheet refresh failed; using last successful copy:', err);
-      return learnerSheetCache.mapping;
-    }
-    throw err;
+    // Never make /api/tickets wait/fail because the optional learner enrichment fails.
+    console.error('Learner Google Sheet lookup failed:', err);
+    return learnerSheetCache.mapping || {};
   }
 }
+
 
 function normalizeLearnerEmail(value) {
   if (!value) return '';

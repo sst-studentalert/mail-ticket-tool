@@ -350,11 +350,21 @@ function applyFiltersAndReload() {
 }
 
 async function loadTickets() {
-  const params = new URLSearchParams();
-  Object.entries(state.filters).forEach(([k, v]) => { if (v) params.set(k, v); });
-  const { tickets } = await api(`/tickets?${params.toString()}`);
-  state.tickets = tickets;
-  renderTicketTable();
+  const wrap = el('ticket-table-wrap');
+  if (wrap) wrap.innerHTML = '<em>Loading tickets...</em>';
+
+  try {
+    const params = new URLSearchParams();
+    Object.entries(state.filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+    const { tickets } = await api(`/tickets?${params.toString()}`);
+    state.tickets = tickets || [];
+    renderTicketTable();
+  } catch (err) {
+    console.error('Failed to load tickets:', err);
+    if (wrap) {
+      wrap.innerHTML = `<div class="error-banner"><strong>Failed to load tickets</strong><br>${escapeHtml(err.message || 'Unknown error')}<br><br><small>Open browser DevTools → Console for the exact API error.</small></div>`;
+    }
+  }
 }
 
 function renderTicketTable() {
@@ -371,7 +381,6 @@ function renderTicketTable() {
           <th>Received</th>
           <th>Mailbox</th>
           <th>Learner Email</th>
-          <th>Raised By</th>
           <th>Student ID</th>
           <th>Raised</th>
           <th>Open</th>
@@ -484,25 +493,6 @@ async function renderLearner() {
         <div class="small">Student ID: <strong>${escapeHtml(data.learner.student_id || 'Not mapped')}</strong></div>
       </div>
 
-      <div class="card" style="margin-top:12px;">
-        <h3 style="margin-top:0;">Registered contacts</h3>
-        ${
-          data.learner.contacts && data.learner.contacts.length
-            ? `<div style="display:grid;gap:8px;">
-                ${data.learner.contacts.map((c) => `
-                  <div class="list-item">
-                    <div>
-                      <strong>${escapeHtml(c.relationship || 'Contact')}</strong>
-                      <div class="small">${escapeHtml(c.name || '')}</div>
-                    </div>
-                    <div class="small">${escapeHtml(c.email || '')}</div>
-                  </div>
-                `).join('')}
-              </div>`
-            : '<p class="small">No additional registered contacts found.</p>'
-        }
-      </div>
-
       <div class="tiles" style="margin-top:12px;">
         <div class="tile"><p class="k">Total raised</p><p class="v">${c.total || 0}</p></div>
         <div class="tile"><p class="k">Currently open</p><p class="v">${c.open || 0}</p></div>
@@ -550,14 +540,12 @@ async function renderLearner() {
         ${data.tickets.length ? `
         <div style="overflow:auto;">
           <table class="dash">
-            <thead><tr><th>Received</th><th>Mailbox</th><th>Sender</th><th>Raised By</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
+            <thead><tr><th>Received</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
             <tbody>
               ${data.tickets.map((t) => `
                 <tr class="link-row learner-ticket-row" data-id="${t.id}">
                   <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
                   <td>${escapeHtml(t.mailbox_email || '')}</td>
-                  <td>${escapeHtml(t.sender_email || extractEmail(t.from_address) || t.from_address || '')}</td>
-                  <td>${escapeHtml(t.sender_relationship || 'Learner')}</td>
                   <td>${escapeHtml(t.subject || '(no subject)')}</td>
                   <td>${escapeHtml(t.assignee_name || '—')}</td>
                   <td><span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></td>
