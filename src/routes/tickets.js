@@ -682,6 +682,12 @@ router.get('/learner/:email', async (req, res, next) => {
         name: mapping ? mapping.name : null,
         status: mapping ? mapping.status : null,
         contacts: mapping ? mapping.contacts : [],
+        father_name: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase() === 'father') || {}).name || null : null,
+        father_email: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase() === 'father') || {}).email || null : null,
+        mother_name: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase() === 'mother') || {}).name || null : null,
+        mother_email: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase() === 'mother') || {}).email || null : null,
+        guardian_name: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase().includes('guardian')) || {}).name || null : null,
+        guardian_email: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase().includes('guardian')) || {}).email || null : null,
       },
       counts: {
         total,

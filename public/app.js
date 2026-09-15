@@ -489,6 +489,12 @@ async function renderLearner() {
     const maxMailbox = Math.max(1, ...mailbox.map((m) => Number(m.count || 0)));
     const maxStatus = Math.max(1, ...Object.values(status).map(Number));
     const slaCls = learnerSlaClass(sla.percent);
+    const fatherContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase() === 'father') || {};
+    const motherContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase() === 'mother') || {};
+    const guardianContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase().includes('guardian')) || {};
+    const fatherName = data.learner.father_name || fatherContact.name || 'Not mapped';
+    const motherName = data.learner.mother_name || motherContact.name || 'Not mapped';
+    const guardianName = data.learner.guardian_name || guardianContact.name || 'Not mapped';
 
     wrap.innerHTML = `
       <div class="section-header">
@@ -497,6 +503,12 @@ async function renderLearner() {
           <div class="small" style="margin-top:4px;">${escapeHtml(data.learner.name || 'Learner')} · ${escapeHtml(canonicalLearnerEmail)}</div>
         </div>
         <div class="small">Student ID: <strong>${escapeHtml(data.learner.student_id || 'Not mapped')}</strong></div>
+      </div>
+
+      <div class="learner-family-strip" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px;">
+        <div class="learner-contact-card"><div class="small">Father</div><strong>${escapeHtml(fatherName)}</strong><div class="small">${escapeHtml(data.learner.father_email || fatherContact.email || '')}</div></div>
+        <div class="learner-contact-card"><div class="small">Mother</div><strong>${escapeHtml(motherName)}</strong><div class="small">${escapeHtml(data.learner.mother_email || motherContact.email || '')}</div></div>
+        <div class="learner-contact-card"><div class="small">Local Guardian</div><strong>${escapeHtml(guardianName)}</strong><div class="small">${escapeHtml(data.learner.guardian_email || guardianContact.email || '')}</div></div>
       </div>
 
       <div class="card" style="margin-top:12px;">
