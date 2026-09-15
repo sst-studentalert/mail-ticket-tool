@@ -484,7 +484,7 @@ function rowHtml(t) {
         ${t.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </td>
       <td>${escapeHtml(t.assignee_name || '—')}</td>
-      <td><span class="badge ${t.status}">${t.status}</span></td>
+      <td>${t.is_merged ? `<span class="badge">Merged → #${escapeHtml(t.merged_into_ticket_id)}</span>` : `<span class="badge ${t.status}">${t.status}</span>`}</td>
       <td>${tatCell(t)}</td>
       <td>${t.tags.map((tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')}</td>
     </tr>
@@ -538,6 +538,7 @@ async function renderLearner() {
     const maxMailbox = Math.max(1, ...mailbox.map((m) => Number(m.count || 0)));
     const maxStatus = Math.max(1, ...Object.values(status).map(Number));
     const slaCls = learnerSlaClass(sla.percent);
+    const mergeableCount = data.tickets.filter((t) => !t.is_merged).length;
 
     wrap.innerHTML = `
       <div class="section-header">
@@ -551,7 +552,7 @@ async function renderLearner() {
         <div class="tile"><p class="k">Total raised</p><p class="v">${c.total || 0}</p></div>
         <div class="tile"><p class="k">Currently open</p><p class="v">${c.open || 0}</p></div>
         <div class="tile"><p class="k">Resolved / Closed</p><p class="v">${c.closed || 0}</p></div>
-        <div class="tile"><p class="k">First response pending</p><p class="v">${c.first_response_pending || 0}</p></div>
+        <div class="tile"><p class="k">Merged</p><p class="v">${c.merged || 0}</p></div>
         <div class="tile"><p class="k">SLA</p><p class="v ${slaCls}">${sla.percent != null ? `${sla.percent}%` : '—'}</p><p class="c">${sla.total ? `${sla.met}/${sla.total} met` : 'No eligible tickets'}</p></div>
       </div>
 
@@ -590,19 +591,26 @@ async function renderLearner() {
       </div>
 
       <div class="dash-card" style="margin-top:16px;">
-        <div class="cap">All tickets for this learner (${data.tickets.length})</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;border-bottom:1px solid var(--line-soft);">
+          <div>
+            <div class="cap">All tickets for this learner (${data.tickets.length})</div>
+            <div class="small" style="margin-top:4px;">Select 2 or more related tickets, then merge them into one primary ticket.</div>
+          </div>
+          <button id="merge-selected-btn" class="btn" disabled>Merge selected (0)</button>
+        </div>
         ${data.tickets.length ? `
         <div style="overflow:auto;">
           <table class="dash">
-            <thead><tr><th>Received</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
+            <thead><tr><th style="width:36px;"><input type="checkbox" id="select-all-learner" title="Select all mergeable tickets"></th><th>Received</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
             <tbody>
               ${data.tickets.map((t) => `
                 <tr class="link-row learner-ticket-row" data-id="${t.id}">
+                  <td>${t.is_merged ? '' : `<input type="checkbox" class="learner-merge-check" data-id="${t.id}" aria-label="Select ticket ${t.id}">`}</td>
                   <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
                   <td>${escapeHtml(t.mailbox_email || '')}</td>
                   <td>${escapeHtml(t.subject || '(no subject)')}</td>
                   <td>${escapeHtml(t.assignee_name || '—')}</td>
-                  <td><span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></td>
+                  <td>${t.is_merged ? `<span class="badge">Merged → #${escapeHtml(t.merged_into_ticket_id)}</span>` : `<span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span>`}</td>
                   <td>${escapeHtml(t.tat && t.tat.first_response ? (t.tat.first_response.human || '—') : '—')}</td>
                   <td>${escapeHtml(t.tat && t.tat.resolution ? (t.tat.resolution.human || '—') : '—')}</td>
                 </tr>
@@ -613,12 +621,106 @@ async function renderLearner() {
       </div>
     `;
 
+    const updateMergeButton = () => {
+      const selected = [...wrap.querySelectorAll('.learner-merge-check:checked')];
+      const btn = el('merge-selected-btn');
+      if (btn) {
+        btn.disabled = selected.length < 2;
+        btn.textContent = `Merge selected (${selected.length})`;
+      }
+      const selectAll = el('select-all-learner');
+      if (selectAll) {
+        const checks = [...wrap.querySelectorAll('.learner-merge-check')];
+        selectAll.checked = checks.length > 0 && checks.every((x) => x.checked);
+        selectAll.indeterminate = checks.some((x) => x.checked) && !selectAll.checked;
+      }
+    };
+
     wrap.querySelectorAll('.learner-ticket-row').forEach((row) => {
-      row.addEventListener('click', () => openTicket(Number(row.dataset.id)));
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('input')) return;
+        openTicket(Number(row.dataset.id));
+      });
     });
+    wrap.querySelectorAll('.learner-merge-check').forEach((check) => {
+      check.addEventListener('click', (e) => e.stopPropagation());
+      check.addEventListener('change', updateMergeButton);
+    });
+    const selectAll = el('select-all-learner');
+    if (selectAll) {
+      selectAll.addEventListener('change', () => {
+        wrap.querySelectorAll('.learner-merge-check').forEach((check) => { check.checked = selectAll.checked; });
+        updateMergeButton();
+      });
+    }
+    const mergeBtn = el('merge-selected-btn');
+    if (mergeBtn) mergeBtn.addEventListener('click', () => openMergeLearnerModal(data));
+    updateMergeButton();
   } catch (err) {
     el('learner-dashboard-wrap').innerHTML = `<div class="error-banner">Failed to load learner details: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+function openMergeLearnerModal(data) {
+  const selectedIds = [...document.querySelectorAll('.learner-merge-check:checked')].map((x) => Number(x.dataset.id));
+  if (selectedIds.length < 2) return;
+  const selected = data.tickets.filter((t) => selectedIds.includes(Number(t.id)));
+  selected.sort((a, b) => new Date(a.first_received_at || a.received_at) - new Date(b.first_received_at || b.received_at));
+  const defaultPrimary = selected[0];
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.id = 'merge-ticket-modal';
+  backdrop.innerHTML = `
+    <div class="modal" style="max-width:760px;">
+      <button class="close-x" id="merge-close-x">&times;</button>
+      <h2>Merge ${selected.length} tickets</h2>
+      <p class="small">These tickets belong to <strong>${escapeHtml(data.learner.name || 'this learner')}</strong>. Choose the primary ticket. The other tickets will be marked as merged and their original history will be preserved.</p>
+      <div style="display:grid;gap:8px;margin-top:14px;">
+        ${selected.map((t) => `
+          <label style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line-soft);border-radius:10px;padding:12px;cursor:pointer;">
+            <input type="radio" name="merge-primary" value="${t.id}" ${Number(t.id) === Number(defaultPrimary.id) ? 'checked' : ''}>
+            <span><strong>#${t.id}</strong> · ${escapeHtml(t.mailbox_email || '')}<br><span class="small">${escapeHtml(t.subject || '(no subject)')} · ${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</span>${Number(t.id) === Number(defaultPrimary.id) ? '<br><span class="small">Recommended: oldest ticket</span>' : ''}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div style="margin-top:14px;padding:12px;border-radius:8px;background:var(--panel-soft);" class="small">
+        <strong>What will happen:</strong><br>
+        • The selected primary ticket remains the main ticket.<br>
+        • Other tickets become <strong>Merged</strong> and link back to the primary ticket.<br>
+        • Original mailbox, conversation, SLA and TAT history are preserved.<br>
+        • Nothing is deleted.
+      </div>
+      <div id="merge-error" style="margin-top:10px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+        <button class="btn" id="merge-cancel-btn">Cancel</button>
+        <button class="btn primary" id="merge-confirm-btn">Merge tickets</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  el('merge-close-x').addEventListener('click', close);
+  el('merge-cancel-btn').addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  el('merge-confirm-btn').addEventListener('click', async () => {
+    const primary = Number(backdrop.querySelector('input[name="merge-primary"]:checked')?.value);
+    const btn = el('merge-confirm-btn');
+    const error = el('merge-error');
+    btn.disabled = true;
+    try {
+      await api(`/tickets/learner/${encodeURIComponent(data.learner.email)}/merge`, {
+        method: 'POST',
+        body: JSON.stringify({ ticket_ids: selectedIds, primary_ticket_id: primary }),
+      });
+      close();
+      await renderLearner();
+    } catch (err) {
+      error.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
+      btn.disabled = false;
+    }
+  });
 }
 
 // ---------- Ticket detail modal ----------
@@ -786,7 +888,7 @@ function renderThread(messages, ticket) {
 }
 
 async function openTicket(id) {
-  const { ticket, mailbox_email, events, messages } = await api(`/tickets/${id}`);
+  const { ticket, mailbox_email, events, messages, merge_info = [], merged_tickets = [], merged_messages = [] } = await api(`/tickets/${id}`);
   state.openTicketId = id;
 
   // Only relevant for office-hours-tagged tickets (prefills the reply BODY
@@ -814,6 +916,16 @@ async function openTicket(id) {
         ${ticket.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </h2>
       <div class="small">From ${escapeHtml(ticket.from_address)} &middot; first received ${fmtDate(ticket.first_received_at || ticket.received_at)}${ticket.received_at && ticket.first_received_at && ticket.received_at !== ticket.first_received_at ? ' &middot; last activity ' + fmtDate(ticket.received_at) : ''} &middot; via ${escapeHtml(mailbox_email || '')}</div>
+      ${merge_info.some((m) => Number(m.secondary_ticket_id) === Number(ticket.id)) ? `
+        <div class="info-banner" style="margin-top:10px;">🔗 This ticket has been merged into <strong>#${escapeHtml(merge_info.find((m) => Number(m.secondary_ticket_id) === Number(ticket.id)).primary_ticket_id)}</strong>. Its original conversation and SLA history are preserved. <button type="button" class="secondary" id="open-primary-ticket-btn" style="margin-left:8px;">Open primary ticket</button></div>
+      ` : ''}
+      ${merged_tickets.length ? `
+        <div class="info-banner" style="margin-top:10px;">🔗 <strong>${merged_tickets.length} ticket${merged_tickets.length === 1 ? '' : 's'} merged into this ticket</strong> — original mailbox and conversation history are preserved.
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+            ${merged_tickets.map((mt) => `<button type="button" class="secondary merged-ticket-open-btn" data-id="${mt.id}">#${mt.id} · ${escapeHtml(mt.mailbox_email || '')}</button>`).join('')}
+          </div>
+        </div>
+      ` : ''}
       ${(() => {
         // Cross-reference every inbound message's To/Cc against our own
         // connected mailboxes (see pickOwnerMailbox in poller.js) so it's
@@ -946,13 +1058,30 @@ async function openTicket(id) {
   backdrop.querySelector('.close-x').addEventListener('click', closeTicketModal);
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeTicketModal(); });
 
+  const mergedInto = merge_info.find((m) => Number(m.secondary_ticket_id) === Number(ticket.id));
+  if (mergedInto && el('open-primary-ticket-btn')) {
+    el('open-primary-ticket-btn').addEventListener('click', () => { closeTicketModal(); openTicket(Number(mergedInto.primary_ticket_id)); });
+  }
+  backdrop.querySelectorAll('.merged-ticket-open-btn').forEach((btn) => {
+    btn.addEventListener('click', () => { closeTicketModal(); openTicket(Number(btn.dataset.id)); });
+  });
+
+  if (mergedInto) {
+    ['status-select','assignee-select','tags-input','office-hours-tag-checkbox','save-tags-btn','automated-checkbox','reply-all-btn','send-reply-btn','mark-replied-btn','reply-to','reply-cc','reply-bcc','reply-body-rich'].forEach((id) => {
+      const node = el(id);
+      if (node) node.disabled = true;
+    });
+  }
+
   el('status-select').addEventListener('change', async (e) => {
+    if (mergedInto) return;
     await api(`/tickets/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) });
     await loadTickets();
   });
 
   if (el('assignee-select')) {
     el('assignee-select').addEventListener('change', async (e) => {
+      if (mergedInto) return;
       const assignee_id = e.target.value ? Number(e.target.value) : null;
       await api(`/tickets/${id}/assign`, { method: 'PATCH', body: JSON.stringify({ assignee_id }) });
       await loadTickets();
@@ -962,6 +1091,7 @@ async function openTicket(id) {
   }
 
   el('save-tags-btn').addEventListener('click', async () => {
+    if (mergedInto) return;
     const tags = el('tags-input').value.split(',').map((t) => t.trim()).filter(Boolean);
     if (el('office-hours-tag-checkbox').checked && !tags.includes('office-hours')) tags.push('office-hours');
     if (!el('office-hours-tag-checkbox').checked) {
@@ -979,6 +1109,7 @@ async function openTicket(id) {
   // waiting for "Save tags" so toggling it feels instant, same as the other
   // checkboxes on this panel (Automated).
   el('office-hours-tag-checkbox').addEventListener('change', async (e) => {
+    if (mergedInto) return;
     const current = el('tags-input').value.split(',').map((t) => t.trim()).filter(Boolean);
     const has = current.includes('office-hours');
     let next = current;
@@ -992,6 +1123,7 @@ async function openTicket(id) {
 
 
   el('automated-checkbox').addEventListener('change', async (e) => {
+    if (mergedInto) return;
     await api(`/tickets/${id}/automated`, { method: 'PATCH', body: JSON.stringify({ is_automated: e.target.checked }) });
     await loadTickets();
   });
@@ -1040,6 +1172,7 @@ async function openTicket(id) {
   });
 
   el('send-reply-btn').addEventListener('click', async () => {
+    if (mergedInto) return;
     const bodyHtml = richEditor.innerHTML.trim();
     const bodyText = richEditor.innerText.trim();
     if (!bodyText) return;
@@ -1062,6 +1195,7 @@ async function openTicket(id) {
   });
 
   el('mark-replied-btn').addEventListener('click', async () => {
+    if (mergedInto) return;
     await api(`/tickets/${id}/mark-replied-externally`, { method: 'POST' });
     await loadTickets();
     closeTicketModal();

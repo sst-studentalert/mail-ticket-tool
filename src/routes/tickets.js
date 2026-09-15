@@ -9,6 +9,17 @@ const { recordMessage } = require('../services/poller');
 const router = express.Router();
 router.use(requireAuth);
 
+// Merge relationships are stored separately so original ticket rows, status,
+// SLA timestamps, mailbox and message history are never deleted or rewritten.
+const mergeTableReady = db.prepare(`
+  CREATE TABLE IF NOT EXISTS ticket_merges (
+    secondary_ticket_id INTEGER PRIMARY KEY,
+    primary_ticket_id INTEGER NOT NULL,
+    merged_by INTEGER,
+    merged_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`).run();
+
 const PROVIDERS = { gmail: gmailAdapter };
 
 
@@ -300,6 +311,7 @@ async function requireTicketAccess(req, res, ticket) {
 // assigned tickets regardless of what filters they pass in.
 router.get('/', async (req, res, next) => {
   try {
+    await mergeTableReady;
     const { mailbox_id, assignee_id, status, automated, tag, q, learner, from_date, to_date } = req.query;
 
     const clauses = [];
@@ -409,10 +421,11 @@ router.get('/', async (req, res, next) => {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = await db
       .prepare(
-        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name
+        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name, mg.primary_ticket_id AS merged_into_ticket_id
          FROM tickets t
          LEFT JOIN mailboxes m ON m.id = t.mailbox_id
          LEFT JOIN team_members tm ON tm.id = t.assignee_id
+         LEFT JOIN ticket_merges mg ON mg.secondary_ticket_id = t.id
          ${where}
          ORDER BY t.received_at DESC
          LIMIT 500`
@@ -438,6 +451,8 @@ router.get('/', async (req, res, next) => {
           learner_name: mapping ? mapping.name : null,
           learner_ticket_count: counts.total,
           learner_open_count: counts.open,
+          merged_into_ticket_id: row.merged_into_ticket_id || null,
+          is_merged: !!row.merged_into_ticket_id,
         };
       }),
     });
@@ -449,6 +464,7 @@ router.get('/', async (req, res, next) => {
 // GET /api/tickets/learner/:email - learner history and cross-mailbox summary
 router.get('/learner/:email', async (req, res, next) => {
   try {
+    await mergeTableReady;
     const requestedEmail = decodeURIComponent(req.params.email || '');
     const normalizedEmail = normalizeLearnerEmail(requestedEmail);
     if (!normalizedEmail) return res.status(400).json({ error: 'Learner email is required' });
@@ -459,10 +475,11 @@ router.get('/learner/:email', async (req, res, next) => {
     const visibility = await getVisibility(req, 't');
     const rows = await db
       .prepare(
-        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name
+        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name, mg.primary_ticket_id AS merged_into_ticket_id
          FROM tickets t
          LEFT JOIN mailboxes m ON m.id = t.mailbox_id
          LEFT JOIN team_members tm ON tm.id = t.assignee_id
+         LEFT JOIN ticket_merges mg ON mg.secondary_ticket_id = t.id
          WHERE t.is_automated = 0
            AND (
              LOWER(TRIM(t.from_address)) = ?
@@ -477,14 +494,17 @@ router.get('/learner/:email', async (req, res, next) => {
     const byStatus = { unassigned: 0, assigned: 0, replied: 0, closed: 0 };
     const byMailbox = new Map();
     for (const t of tickets) {
-      if (Object.prototype.hasOwnProperty.call(byStatus, t.status)) byStatus[t.status] += 1;
+      // A merged secondary remains part of the learner's total history, but
+      // it is not counted again in the active status buckets.
+      if (!t.merged_into_ticket_id && Object.prototype.hasOwnProperty.call(byStatus, t.status)) byStatus[t.status] += 1;
       const mailbox = t.mailbox_email || 'Unknown';
       byMailbox.set(mailbox, (byMailbox.get(mailbox) || 0) + 1);
     }
 
     const total = tickets.length;
+    const merged = rows.filter((t) => t.merged_into_ticket_id).length;
     const closed = byStatus.closed;
-    const open = total - closed;
+    const open = Math.max(0, total - closed - merged);
     const sla = learnerSla(rows);
 
     res.json({
@@ -501,11 +521,66 @@ router.get('/learner/:email', async (req, res, next) => {
         unassigned: byStatus.unassigned,
         first_response_pending: byStatus.assigned,
         replied: byStatus.replied,
+        merged,
       },
       sla,
       by_status: byStatus,
       by_mailbox: [...byMailbox.entries()].map(([mailbox, count]) => ({ mailbox, count })),
       tickets,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/tickets/learner/:email/merge - merge two or more tickets for one learner.
+// Admin-only. The primary ticket remains the working ticket; secondary tickets
+// are linked to it and remain intact for audit/SLA/history purposes.
+router.post('/learner/:email/merge', async (req, res, next) => {
+  try {
+    await mergeTableReady;
+    if (!req.user.is_admin) return res.status(403).json({ error: 'Only admins can merge tickets' });
+
+    const requestedEmail = decodeURIComponent(req.params.email || '');
+    const normalizedEmail = normalizeLearnerEmail(requestedEmail);
+    const ids = [...new Set((Array.isArray(req.body && req.body.ticket_ids) ? req.body.ticket_ids : []).map(Number).filter(Number.isInteger))];
+    const primaryId = Number(req.body && req.body.primary_ticket_id);
+
+    if (!normalizedEmail) return res.status(400).json({ error: 'Learner email is required' });
+    if (ids.length < 2) return res.status(400).json({ error: 'Select at least two tickets to merge' });
+    if (!ids.includes(primaryId)) return res.status(400).json({ error: 'Primary ticket must be one of the selected tickets' });
+
+    const visibility = await getVisibility(req, 't');
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.prepare(
+      `SELECT t.*, mg.primary_ticket_id AS merged_into_ticket_id
+       FROM tickets t
+       LEFT JOIN ticket_merges mg ON mg.secondary_ticket_id = t.id
+       WHERE t.id IN (${placeholders}) AND t.is_automated = 0 ${visibility.sql}`
+    ).all(...ids, ...visibility.params);
+
+    if (rows.length !== ids.length) return res.status(403).json({ error: 'One or more selected tickets are not accessible' });
+    if (rows.some((t) => normalizeLearnerEmail(t.from_address) !== normalizedEmail)) {
+      return res.status(400).json({ error: 'All selected tickets must belong to the same learner' });
+    }
+    if (rows.some((t) => t.merged_into_ticket_id)) {
+      return res.status(400).json({ error: 'One or more selected tickets is already merged into another ticket' });
+    }
+
+    const secondaryRows = rows.filter((t) => Number(t.id) !== primaryId);
+    for (const secondary of secondaryRows) {
+      await db.prepare(
+        `INSERT INTO ticket_merges (secondary_ticket_id, primary_ticket_id, merged_by, merged_at)
+         VALUES (?, ?, ?, datetime('now'))`
+      ).run(secondary.id, primaryId, req.user.id);
+      await logEvent(secondary.id, req.user.id, 'ticket_merged', `Merged into ticket #${primaryId}`);
+      await logEvent(primaryId, req.user.id, 'ticket_merge_added', `Merged ticket #${secondary.id}`);
+    }
+
+    res.json({
+      primary_ticket_id: primaryId,
+      merged_ticket_ids: secondaryRows.map((t) => t.id),
+      message: `Merged ${ids.length} tickets into ticket #${primaryId}`,
     });
   } catch (err) {
     next(err);
@@ -538,11 +613,43 @@ router.get('/:id', async (req, res, next) => {
       .prepare(`SELECT * FROM ticket_messages WHERE ticket_id = ? ORDER BY sent_at`)
       .all(ticket.id);
 
+    await mergeTableReady;
+    const mergeInfo = await db.prepare(
+      `SELECT mg.primary_ticket_id, mg.secondary_ticket_id, mg.merged_at, tm.name AS merged_by_name
+       FROM ticket_merges mg
+       LEFT JOIN team_members tm ON tm.id = mg.merged_by
+       WHERE mg.primary_ticket_id = ? OR mg.secondary_ticket_id = ?
+       ORDER BY mg.merged_at`
+    ).all(ticket.id, ticket.id);
+
+    const mergedChildren = mergeInfo
+      .filter((m) => Number(m.primary_ticket_id) === Number(ticket.id))
+      .map((m) => Number(m.secondary_ticket_id));
+
+    let mergedTickets = [];
+    let mergedMessages = [];
+    if (mergedChildren.length) {
+      const ph = mergedChildren.map(() => '?').join(',');
+      mergedTickets = await db.prepare(
+        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name
+         FROM tickets t
+         LEFT JOIN mailboxes m ON m.id = t.mailbox_id
+         LEFT JOIN team_members tm ON tm.id = t.assignee_id
+         WHERE t.id IN (${ph}) ORDER BY t.first_received_at, t.received_at`
+      ).all(...mergedChildren);
+      mergedMessages = await db.prepare(
+        `SELECT * FROM ticket_messages WHERE ticket_id IN (${ph}) ORDER BY sent_at`
+      ).all(...mergedChildren);
+    }
+
     res.json({
       ticket: serializeTicket(ticket),
       mailbox_email: mailbox ? mailbox.email : null,
       events,
       messages,
+      merge_info: mergeInfo,
+      merged_tickets: mergedTickets.map(serializeTicket),
+      merged_messages: mergedMessages,
     });
   } catch (err) {
     next(err);
