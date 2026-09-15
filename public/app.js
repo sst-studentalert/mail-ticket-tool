@@ -264,6 +264,10 @@ async function renderTickets() {
     </div>
     ${!isAdmin ? '<p class="small">Showing tickets assigned to you.</p>' : ''}
     <div class="filters">
+      <div style="grid-column:1 / -1;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:2px;">
+        <strong style="font-size:14px;">Filters</strong>
+        <button type="button" class="secondary-btn" id="clear-ticket-filters" style="white-space:nowrap;">Clear filters</button>
+      </div>
       <div>
         <label>Mailbox</label>
         <select id="f-mailbox">
@@ -708,7 +712,7 @@ async function renderLearner() {
       });
 
       const updateMergeButton = () => {
-        const selected = [...wrap.querySelectorAll('.learner-merge-check:checked')];
+        const selected = [...ticketTableWrap.querySelectorAll('.learner-merge-check:checked')];
         const btn = el('merge-selected-btn');
         if (btn) {
           btn.disabled = selected.length < 2 || !state.user.is_admin;
@@ -716,7 +720,7 @@ async function renderLearner() {
         }
         const selectAll = el('select-all-learner');
         if (selectAll) {
-          const checks = [...wrap.querySelectorAll('.learner-merge-check')];
+          const checks = [...ticketTableWrap.querySelectorAll('.learner-merge-check')];
           selectAll.checked = checks.length > 0 && checks.every((x) => x.checked);
         }
       };
@@ -729,7 +733,7 @@ async function renderLearner() {
       if (selectAll) {
         selectAll.addEventListener('click', (event) => event.stopPropagation());
         selectAll.addEventListener('change', () => {
-          wrap.querySelectorAll('.learner-merge-check').forEach((check) => {
+          ticketTableWrap.querySelectorAll('.learner-merge-check').forEach((check) => {
             check.checked = selectAll.checked;
           });
           updateMergeButton();
