@@ -555,13 +555,98 @@ async function renderLearner() {
       </div>
 
       <div class="dash-card" style="margin-top:16px;">
-        <div class="cap">All tickets for this learner (${data.tickets.length})</div>
-        ${data.tickets.length ? `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+          <div class="cap" style="margin:0;">Tickets for this learner <span id="learner-ticket-count">(${data.tickets.length})</span></div>
+          <button type="button" class="secondary-btn" id="learner-clear-filters">Clear filters</button>
+        </div>
+
+        <div class="card" style="margin:12px 0 14px;padding:12px;">
+          <div style="font-weight:700;margin-bottom:9px;">Filter tickets</div>
+          <div style="display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) minmax(240px,1.5fr);gap:10px;align-items:end;">
+            <label class="small">
+              Raised by
+              <select id="learner-raised-by-filter" style="width:100%;margin-top:4px;">
+                <option value="all">All</option>
+                <option value="student">Student</option>
+                <option value="father">Father</option>
+                <option value="mother">Mother</option>
+                <option value="guardian">Local Guardian</option>
+                <option value="other">Other / Unknown</option>
+              </select>
+            </label>
+            <label class="small">
+              Status
+              <select id="learner-status-filter" style="width:100%;margin-top:4px;">
+                <option value="all">All</option>
+                <option value="unassigned">Unassigned</option>
+                <option value="assigned">First response pending</option>
+                <option value="replied">Open</option>
+                <option value="closed">Closed</option>
+              </select>
+            </label>
+            <label class="small">
+              Search subject / email / ticket ID
+              <input id="learner-ticket-search" type="search" placeholder="Search..." style="width:100%;margin-top:4px;box-sizing:border-box;">
+            </label>
+          </div>
+        </div>
+
+        <div id="learner-ticket-table-wrap"></div>
+      </div>
+    `;
+
+    const ticketTableWrap = el('learner-ticket-table-wrap');
+    const raisedByFilter = el('learner-raised-by-filter');
+    const statusFilter = el('learner-status-filter');
+    const searchInput = el('learner-ticket-search');
+    const ticketCount = el('learner-ticket-count');
+    const clearFiltersBtn = el('learner-clear-filters');
+
+    function raisedByKey(ticket) {
+      const relationship = String(ticket.sender_relationship || 'Learner').trim().toLowerCase();
+      if (relationship === 'learner' || relationship === 'student') return 'student';
+      if (relationship.includes('father')) return 'father';
+      if (relationship.includes('mother')) return 'mother';
+      if (relationship.includes('guardian')) return 'guardian';
+      return 'other';
+    }
+
+    function renderLearnerTickets() {
+      const raisedBy = raisedByFilter.value;
+      const statusValue = statusFilter.value;
+      const search = String(searchInput.value || '').trim().toLowerCase();
+
+      const filteredTickets = data.tickets.filter((t) => {
+        if (raisedBy !== 'all' && raisedByKey(t) !== raisedBy) return false;
+        if (statusValue !== 'all' && String(t.status || '').toLowerCase() !== statusValue) return false;
+
+        if (search) {
+          const haystack = [
+            t.id,
+            t.subject,
+            t.from_address,
+            t.sender_name,
+            t.sender_relationship,
+          ].map((value) => String(value == null ? '' : value).toLowerCase()).join(' ');
+          if (!haystack.includes(search)) return false;
+        }
+
+        return true;
+      });
+
+      ticketCount.textContent = `(${filteredTickets.length} of ${data.tickets.length})`;
+
+      if (!filteredTickets.length) {
+        ticketTableWrap.innerHTML = '<p class="small" style="padding:16px;">No tickets match the selected filters.</p>';
+        return;
+      }
+
+      ticketTableWrap.innerHTML = `
         <div style="overflow:auto;">
           <table class="dash">
             <thead><tr><th>Received</th><th>Sender</th><th>Raised By</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
             <tbody>
-              ${data.tickets.map((t) => `
+              ${filteredTickets.map((t) => `
                 <tr class="link-row learner-ticket-row" data-id="${t.id}">
                   <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
                   <td>${escapeHtml(t.from_address || '')}</td>
@@ -569,20 +654,33 @@ async function renderLearner() {
                   <td>${escapeHtml(t.mailbox_email || '')}</td>
                   <td>${escapeHtml(t.subject || '(no subject)')}</td>
                   <td>${escapeHtml(t.assignee_name || '—')}</td>
-                  <td><span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span></td>
+                  <td><span class="badge ${escapeHtml(t.status)}">${escapeHtml(learnerStatusLabel(t.status))}</span></td>
                   <td>${escapeHtml(t.tat && t.tat.first_response ? (t.tat.first_response.human || '—') : '—')}</td>
                   <td>${escapeHtml(t.tat && t.tat.resolution ? (t.tat.resolution.human || '—') : '—')}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
-        </div>` : '<p class="small" style="padding:16px;">No tickets found for this learner.</p>'}
-      </div>
-    `;
+        </div>
+      `;
 
-    wrap.querySelectorAll('.learner-ticket-row').forEach((row) => {
-      row.addEventListener('click', () => openTicket(Number(row.dataset.id)));
+      ticketTableWrap.querySelectorAll('.learner-ticket-row').forEach((row) => {
+        row.addEventListener('click', () => openTicket(Number(row.dataset.id)));
+      });
+    }
+
+    [raisedByFilter, statusFilter].forEach((control) => {
+      control.addEventListener('change', renderLearnerTickets);
     });
+    searchInput.addEventListener('input', renderLearnerTickets);
+    clearFiltersBtn.addEventListener('click', () => {
+      raisedByFilter.value = 'all';
+      statusFilter.value = 'all';
+      searchInput.value = '';
+      renderLearnerTickets();
+    });
+
+    renderLearnerTickets();
   } catch (err) {
     el('learner-dashboard-wrap').innerHTML = `<div class="error-banner">Failed to load learner details: ${escapeHtml(err.message)}</div>`;
   }
