@@ -32,24 +32,15 @@ const RESOLUTION_TARGET_H = 72;
 // ---------------------------------------------------------------------------
 // IMPORTANT: EMAIL IS THE LOOKUP KEY.
 //
-// The Consolidated tab is the master list of learner Name + SST Email.
-// The batch tabs contain the additional student details (Student ID, parent
-// emails, guardian email, etc.). We first match a batch row TO THE LEARNER'S
-// EMAIL from Consolidated. We then return Student ID and contact details from
-// that matched row.
+// The Consolidated tab is the single source of learner data. It is populated
+// with IMPORTRANGE and contains learner, Student ID, parent and guardian
+// columns in the same row. We match tickets to this sheet by EMAIL only.
 //
 // We NEVER use Student ID to find a ticket. A ticket is matched by sender email.
 const LEARNER_SHEET_ID =
   process.env.LEARNER_SHEET_ID || '19mFOOpN1wqDoWMazVeQ5ni28mU2i9cICUvBPrzE7kRM';
 const LEARNER_SHEET_GID = process.env.LEARNER_SHEET_GID || '0';
 const LEARNER_SHEET_CACHE_MS = 5 * 60 * 1000;
-
-const LEARNER_DETAIL_SHEET_NAMES = [
-  'Copy of Batch 2027',
-  'Copy of Batch 2028',
-  'Copy of Batch 2029',
-  'Copy of 2030 Batch',
-];
 
 let learnerSheetCache = {
   loadedAt: 0,
@@ -230,14 +221,6 @@ async function fetchGoogleSheetCsvByGid(gid) {
   return response.text();
 }
 
-async function fetchGoogleSheetCsvByName(sheetName) {
-  const url =
-    `https://docs.google.com/spreadsheets/d/${encodeURIComponent(LEARNER_SHEET_ID)}` +
-    `/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Google Sheet ${sheetName} returned HTTP ${response.status}`);
-  return response.text();
-}
 
 async function loadLearnerMapping() {
   const now = Date.now();
@@ -260,18 +243,12 @@ async function loadLearnerMapping() {
       throw new Error('No learner rows were found in the Consolidated sheet.');
     }
 
-    // Step 2: Use the learner EMAIL to find the matching row in each batch.
-    // Student ID and parent/guardian details are retrieved from that matched row.
-    for (const sheetName of LEARNER_DETAIL_SHEET_NAMES) {
-      try {
-        const text = await fetchGoogleSheetCsvByName(sheetName);
-        enrichFromBatchSheet(mapping, text, sheetName);
-      } catch (sheetErr) {
-        console.error(`Could not load learner detail sheet ${sheetName}:`, sheetErr);
-      }
-    }
+    // All learner data now lives in the Consolidated tab.
+    // That tab is populated with IMPORTRANGE, so there is no need to fetch
+    // any separate Batch tabs. Student ID and parent/guardian details are
+    // read directly from the same Consolidated row.
 
-    // Step 3: Build the ticket lookup using EMAILS only.
+    // Build the ticket lookup using EMAILS only.
     const contactLookup = buildContactLookup(mapping);
 
     learnerSheetCache = {
