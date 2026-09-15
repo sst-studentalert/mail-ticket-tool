@@ -251,6 +251,10 @@ async function migrate() {
     -- shown/sorted/filtered later) and adds an "office-hours" tag as a
     -- visible label - see PATCH /:id/office-hours in routes/tickets.js.
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS office_hours_at TIMESTAMPTZ;
+        -- Default tick state for the Dashboard's mailbox filter. 0 means "not
+    -- selected by default" (e.g. the dean mailbox), NOT hidden - a viewer
+    -- can still tick it back on for a one-off look.
+    ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS in_scope INTEGER NOT NULL DEFAULT 1;
 
     -- Tiny generic key/value store for admin-editable settings that don't
     -- warrant their own table/column - currently just the "office hours"

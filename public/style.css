@@ -207,3 +207,593 @@ tr.ticket-row:hover { background: #f8fafc; }
 .pill-status { text-transform: capitalize; }
 
 .small { font-size: 12px; color: var(--muted); }
+
+.filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #eef0f2; color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 12px; font-size: 14px; font-weight: 600;
+}
+.filter-btn:hover { background: #e2e5e9; }
+.filter-btn.active { background: #eef2ff; color: var(--primary); border-color: #c7d2fe; }
+
+.filter-pop {
+  position: absolute; z-index: 40; top: 100%; left: 0; margin-top: 6px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+  padding: 10px 12px; min-width: 280px; max-height: 320px; overflow-y: auto;
+}
+.filter-pop .quick {
+  display: flex; gap: 12px; padding-bottom: 8px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.filter-pop .quick a { font-size: 12px; color: var(--primary); cursor: pointer; }
+.filter-pop label.opt {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0; padding: 5px 0; font-size: 13px; color: var(--text); cursor: pointer;
+}
+.filter-pop input[type="checkbox"] { width: auto; }
+
+#s-mailboxes, #ms-mailboxes { min-width: auto; }
+.filters .clear-row {
+  flex-basis: 100%;
+  padding-top: 4px;
+  padding-left: 90px;
+}
+/* ===================================================================
+   Dashboard theme — append to the end of public/style.css
+   ===================================================================
+
+   SET THIS FIRST: --brand below is a placeholder academic blue. Replace
+   it with Scaler's actual brand hex and everything else follows from it.
+   --brand-dark should be roughly 12% darker, --brand-tint a very pale
+   wash of the same hue.
+   =================================================================== */
+
+:root {
+  --brand: #1f57c3;
+  --brand-dark: #17459c;
+  --brand-tint: #eef3fc;
+  --brand-line: #c9daf5;
+
+  --ink: #14181f;
+  --ink-soft: #5b6472;
+  --ink-faint: #8f97a3;
+  --line: #e6e9ee;
+  --line-soft: #f1f3f6;
+  --paper: #ffffff;
+  --canvas: #f7f8fa;
+
+  --warn: #a45c07;
+  --warn-tint: #fdf6ea;
+  --alert: #c0322c;
+  --alert-tint: #fdf0ef;
+  --alert-line: #f4cfcd;
+}
+
+body { background: var(--canvas); color: var(--ink); }
+
+/* --- top bar ------------------------------------------------------ */
+.topbar { border-bottom: 1px solid var(--line); }
+.topbar .brand { color: var(--brand); font-weight: 500; letter-spacing: -0.01em; }
+.topbar nav a { font-weight: 400; }
+.topbar nav a.active, .topbar nav a:hover { background: var(--brand-tint); color: var(--brand); }
+
+/* --- headings ----------------------------------------------------- */
+/* Weight 700 is what makes the current page shout. 500 throughout. */
+h1, h2, h3 { font-weight: 500; letter-spacing: -0.01em; color: var(--ink); }
+h2 { font-size: 20px; }
+h3 { font-size: 15px; }
+
+/* --- page header row ---------------------------------------------- */
+.page-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.page-head .meta { font-size: 12px; color: var(--ink-soft); margin: 2px 0 0; }
+
+/* --- range presets ------------------------------------------------ */
+.range-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.range-pill {
+  background: var(--paper); border: 1px solid var(--line); border-radius: 999px;
+  padding: 5px 13px; font-size: 13px; color: var(--ink-soft); cursor: pointer;
+  font-weight: 400;
+}
+.range-pill:hover { border-color: var(--brand-line); color: var(--ink); background: var(--paper); }
+.range-pill.on {
+  background: var(--brand-tint); color: var(--brand);
+  border-color: var(--brand-line); font-weight: 500;
+}
+.range-dates { display: flex; align-items: center; gap: 6px; margin-left: 4px; }
+.range-dates input { width: auto; font-size: 13px; padding: 5px 8px; }
+
+/* --- mailbox filter button + popover ------------------------------ */
+#s-mailboxes, #ms-mailboxes, #p-mailboxes { min-width: auto; }
+.filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 12px; font-size: 13px; font-weight: 400;
+}
+.filter-btn:hover { background: var(--paper); border-color: var(--brand-line); }
+.filter-btn.active {
+  background: var(--brand-tint); color: var(--brand);
+  border-color: var(--brand-line); font-weight: 500;
+}
+.filter-pop {
+  position: absolute; z-index: 40; top: 100%; left: 0; margin-top: 6px;
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(20,24,31,0.10);
+  padding: 10px 12px; min-width: 290px; max-height: 320px; overflow-y: auto;
+}
+.filter-pop .quick {
+  display: flex; gap: 12px; padding-bottom: 8px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.filter-pop .quick a { font-size: 12px; color: var(--brand); cursor: pointer; }
+.filter-pop label.opt {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  padding: 5px 0; font-size: 13px; color: var(--ink); cursor: pointer;
+}
+.filter-pop input[type="checkbox"] { width: auto; }
+
+/* --- unit toggle (# / %) ------------------------------------------ */
+.unit-toggle { display: inline-flex; background: var(--line-soft); border-radius: 6px; padding: 2px; }
+.unit-toggle span {
+  padding: 4px 11px; font-size: 13px; color: var(--ink-soft);
+  border-radius: 4px; cursor: pointer;
+}
+.unit-toggle span.on { background: var(--paper); color: var(--ink); font-weight: 500; }
+
+/* --- metric tiles -------------------------------------------------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.tile .k { font-size: 12px; color: var(--ink-soft); margin: 0 0 6px; }
+.tile .v { font-size: 24px; font-weight: 500; margin: 0; line-height: 1.15; }
+.tile .c { font-size: 11px; color: var(--ink-faint); margin: 5px 0 0; }
+.tile .c.worse { color: var(--warn); }
+
+/* --- data table ---------------------------------------------------- */
+.dash-card {
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 8px; overflow: hidden; margin-bottom: 16px;
+}
+.dash-card > .cap {
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+  font-size: 14px; font-weight: 500;
+}
+table.dash { width: 100%; border-collapse: collapse; background: transparent; border-radius: 0; }
+table.dash th {
+  background: #fbfcfd; color: var(--ink-soft); font-size: 12px; font-weight: 400;
+  text-align: right; padding: 10px 16px; border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+table.dash th:first-child, table.dash td:first-child { text-align: left; }
+table.dash td {
+  padding: 11px 16px; border-bottom: 1px solid var(--line-soft);
+  font-size: 13px; text-align: right; vertical-align: middle;
+}
+table.dash tbody tr:last-child td { border-bottom: 0; }
+table.dash tr.link-row { cursor: pointer; }
+table.dash tr.link-row:hover { background: var(--brand-tint); }
+table.dash td.name { color: var(--brand); }
+table.dash td.strong { font-weight: 500; }
+table.dash tr.queue-row td { background: var(--warn-tint); color: var(--ink-soft); }
+table.dash tfoot td {
+  background: #fbfcfd; font-weight: 500; border-top: 1px solid var(--line);
+  border-bottom: 0; padding: 12px 16px; font-size: 13px;
+}
+table.dash td.warn { color: var(--warn); }
+table.dash td.alert { color: var(--alert); font-weight: 500; }
+table.dash td.nil { color: var(--ink-faint); }
+
+/* --- overdue rows in the ticket list ------------------------------- */
+table.dash tr.overdue td { background: var(--alert-tint); }
+table.dash tr.overdue td:first-child { box-shadow: inset 3px 0 0 var(--alert); }
+
+/* --- alert ribbon --------------------------------------------------- */
+.ribbon {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  background: var(--alert-tint); border: 1px solid var(--alert-line);
+  border-radius: 8px; padding: 11px 16px; margin-bottom: 16px;
+}
+.ribbon .msg { display: flex; align-items: center; gap: 9px; font-size: 13px; color: #8f2723; }
+.ribbon .msg svg { flex: none; }
+.ribbon button.link {
+  background: none; border: 0; padding: 0; font: inherit; font-size: 13px;
+  color: var(--alert); text-decoration: underline; cursor: pointer; font-weight: 500;
+}
+
+/* --- back link ------------------------------------------------------ */
+.back-link {
+  background: none; border: 0; padding: 0; font: inherit; font-size: 13px;
+  color: var(--brand); cursor: pointer; margin-bottom: 10px; display: inline-block;
+}
+
+/* --- chart card ----------------------------------------------------- */
+.chart-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+}
+.chart-legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-soft); }
+.chart-note { font-size: 12px; color: var(--ink-soft); margin: 10px 0 0; }
+
+/* --- buttons -------------------------------------------------------- */
+button { background: var(--brand); font-weight: 500; }
+button:hover { background: var(--brand-dark); }
+button.secondary { background: var(--line-soft); color: var(--ink); font-weight: 400; }
+button.secondary:hover { background: #e7eaef; }
+
+/* --- status badges -------------------------------------------------- */
+.badge { font-weight: 500; }
+.badge.unassigned { background: var(--line-soft); color: var(--ink-soft); }
+.badge.assigned { background: var(--brand-tint); color: var(--brand); }
+.badge.replied { background: #e7f4ec; color: #1f6b3f; }
+.badge.closed { background: #f0edf7; color: #5b4a86; }
+
+/* --- misc ----------------------------------------------------------- */
+.info-banner { background: transparent; color: var(--ink-soft); padding: 0; font-size: 12px; margin-bottom: 16px; }
+.small { color: var(--ink-soft); }
+
+/* --- Polish: avatars, share bars, status dots ---------------------------- */
+
+.who { display: flex; align-items: center; gap: 10px; }
+.avatar {
+  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  background: var(--brand-tint); color: var(--brand);
+  font-size: 11px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+.avatar.lg { width: 44px; height: 44px; font-size: 15px; }
+.avatar.queue { background: #f7ecd9; color: var(--warn); }
+.avatar.blank { background: transparent; }
+
+/* Same number as the cell above it, but distribution becomes readable
+   without arithmetic. Scaled against the largest row, not the team total. */
+.share {
+  display: block; height: 3px; margin-top: 5px;
+  background: var(--line-soft); border-radius: 2px; overflow: hidden;
+}
+.share > span { display: block; height: 3px; background: var(--brand-line); border-radius: 2px; }
+
+.dot {
+  display: inline-block; width: 6px; height: 6px;
+  border-radius: 50%; margin-right: 6px; vertical-align: middle;
+}
+.dot.ok { background: #2f8a5b; }
+.dot.warn { background: #d08a1c; }
+.dot.bad { background: var(--alert, #c0392b); }
+
+.person-head { display: flex; align-items: center; gap: 13px; margin-bottom: 16px; }
+.person-head h2 { font-size: 21px; letter-spacing: -0.015em; }
+
+.all-clear {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: #2f8a5b; margin: 0 0 16px;
+}
+
+/* Denser header, roomier rows. Most of the difference between "a table"
+   and "a product" is here rather than in any one feature. */
+table.dash thead th {
+  font-size: 11px; letter-spacing: 0.03em; text-transform: uppercase;
+  color: var(--ink-faint); font-weight: 400;
+}
+table.dash td { padding: 13px 18px; }
+table.dash tbody tr:nth-child(even) td { background: #fbfcfd; }
+table.dash tbody tr.link-row:hover td { background: var(--brand-tint); }
+.dash-card { border-radius: 10px; }
+.tile { border-radius: 10px; padding: 15px 17px; }
+.tile .v { font-size: 25px; }
+
+/* ================================================================
+   SST-style dark mode — dark by default, light mode via toggle
+   ================================================================ */
+:root {
+  --bg:#090b10; --panel:#10141b; --border:#252b36; --text:#f3f5f7;
+  --muted:#929aa8; --primary:#6ea8ff; --primary-dark:#4f8ff0;
+  --danger:#ff6b6b; --success:#4fd18b; --warn:#e6a23c;
+  --brand:#6ea8ff; --brand-dark:#4f8ff0; --brand-tint:#111d31; --brand-line:#294c7d;
+  --ink:#f3f5f7; --ink-soft:#a4adba; --ink-faint:#697383;
+  --line:#252b36; --line-soft:#1b2029; --paper:#10141b; --canvas:#090b10;
+  --warn-tint:#211a0f; --alert:#ff6b6b; --alert-tint:#251214; --alert-line:#5b282c;
+}
+:root[data-theme="light"] {
+  --bg:#f7f8fa; --panel:#fff; --border:#e1e4e8; --text:#1f2328; --muted:#6a737d;
+  --primary:#2563eb; --primary-dark:#1d4ed8; --danger:#dc2626; --success:#16a34a; --warn:#a45c07;
+  --brand:#1f57c3; --brand-dark:#17459c; --brand-tint:#eef3fc; --brand-line:#c9daf5;
+  --ink:#14181f; --ink-soft:#5b6472; --ink-faint:#8f97a3; --line:#e6e9ee;
+  --line-soft:#f1f3f6; --paper:#fff; --canvas:#f7f8fa; --warn-tint:#fdf6ea;
+  --alert:#c0322c; --alert-tint:#fdf0ef; --alert-line:#f4cfcd;
+}
+html,body { background:var(--canvas); color:var(--ink); }
+body {
+  background:radial-gradient(circle at 50% -15%,rgba(110,168,255,.08),transparent 35%),var(--canvas);
+}
+.topbar {
+  background:rgba(16,20,27,.92); border-bottom:1px solid var(--line);
+  backdrop-filter:blur(12px);
+}
+:root[data-theme="light"] .topbar { background:rgba(255,255,255,.94); }
+.topbar .brand { color:var(--ink); font-weight:600; letter-spacing:-.02em; }
+.topbar nav a.active,.topbar nav a:hover { background:var(--brand-tint); color:var(--brand); }
+.card,table,.filters,.list-item,.modal,.dash-card,.tile,.chart-card {
+  background:var(--paper); border-color:var(--line);
+}
+input,select,textarea,.reply-editor { background:var(--panel); color:var(--text); border-color:var(--line); }
+input::placeholder,textarea::placeholder { color:var(--ink-faint); }
+button { background:var(--brand); }
+button:hover { background:var(--brand-dark); }
+button.secondary { background:var(--line-soft); color:var(--ink); border:1px solid var(--line); }
+button.secondary:hover { background:var(--line); }
+table th,table.dash th,table.dash tfoot td { background:var(--line-soft); }
+tr.ticket-row:hover,table.dash tr.link-row:hover td { background:var(--brand-tint); }
+.body-box,.thread-message.inbound { background:var(--line-soft); }
+.thread-message.outbound { background:var(--brand-tint); border-color:var(--brand-line); }
+.filter-btn,.range-pill { background:var(--paper); color:var(--ink-soft); border-color:var(--line); }
+.filter-btn:hover,.range-pill:hover { border-color:var(--brand-line); }
+.filter-btn.active,.range-pill.on { background:var(--brand-tint); color:var(--brand); border-color:var(--brand-line); }
+.filter-pop { background:var(--paper); border-color:var(--line); box-shadow:0 12px 30px rgba(0,0,0,.35); }
+.unit-toggle { background:var(--line-soft); }
+.unit-toggle span.on { background:var(--paper); color:var(--ink); }
+table.dash tbody tr:nth-child(even) td { background:rgba(255,255,255,.015); }
+:root[data-theme="light"] table.dash tbody tr:nth-child(even) td { background:#fbfcfd; }
+.theme-toggle { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.page-head h2 { font-size:22px; font-weight:600; }
+.tile .v { font-size:26px; font-weight:600; letter-spacing:-.02em; }
+.dash-card { border-radius:10px; }
+table.dash td { padding:14px 18px; }
+
+/* ================================================================
+   Dark-mode visibility + form-control fixes
+   ================================================================ */
+
+/* Checkboxes and radio buttons must never inherit the global
+   input { width:100% } rule. Give them a clear, clickable size. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--brand);
+  flex: 0 0 18px;
+  cursor: pointer;
+}
+
+/* Learner merge selector column */
+table.dash th.merge-select-col,
+table.dash td.merge-select-col {
+  width: 48px;
+  min-width: 48px;
+  max-width: 48px;
+  text-align: center;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+/* The current learner merge markup uses the first table column for
+   selection, so keep that column compact and centered. */
+table.dash th:first-child input[type="checkbox"],
+table.dash td:first-child input[type="checkbox"] {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Rich-text toolbar was using a light hard-coded background with light
+   dark-mode text. Use theme variables instead. */
+.rich-toolbar-btn {
+  background: var(--line-soft) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line) !important;
+  min-width: 34px;
+  min-height: 30px;
+  padding: 4px 10px;
+}
+.rich-toolbar-btn:hover {
+  background: var(--line) !important;
+  color: var(--ink) !important;
+  border-color: var(--brand-line) !important;
+}
+
+/* Secondary buttons, including Reply All / merge-related controls,
+   remain readable in dark mode. */
+button.secondary {
+  background: var(--line-soft) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line) !important;
+}
+button.secondary:hover {
+  background: var(--line) !important;
+  color: var(--ink) !important;
+}
+
+/* The merge confirmation card uses --panel-soft in the inline markup.
+   Define it so the panel is visible in both themes. */
+:root {
+  --panel-soft: #171c25;
+}
+:root[data-theme="light"] {
+  --panel-soft: #f1f3f6;
+}
+
+/* Merge confirmation option cards */
+.merge-primary-option,
+label[style*="border:1px solid var(--line-soft)"] {
+  color: var(--ink);
+  background: var(--paper);
+}
+
+/* Make small helper text readable without becoming too bright. */
+.small,
+.stat-row,
+.reply-field label,
+.side-field label {
+  color: var(--ink-soft);
+}
+
+/* Inputs/selects in the ticket modal */
+input, select, textarea, .reply-editor {
+  background: var(--panel) !important;
+  color: var(--text) !important;
+  border-color: var(--line) !important;
+}
+input:focus, select:focus, textarea:focus, .reply-editor:focus {
+  outline: 2px solid var(--brand-line);
+  outline-offset: 1px;
+}
+
+/* Native select option lists can otherwise inherit a light browser theme. */
+select option {
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* Ticket/thread text surfaces */
+.body-box,
+.thread-message.inbound {
+  background: var(--line-soft) !important;
+  color: var(--ink) !important;
+  border-color: var(--line) !important;
+}
+.thread-message.outbound {
+  background: var(--brand-tint) !important;
+  color: var(--ink) !important;
+  border-color: var(--brand-line) !important;
+}
+.thread-message-body,
+.thread-message-body * {
+  color: inherit;
+}
+
+/* Keep the modal's close control visible on dark backgrounds. */
+.modal .close-x {
+  color: var(--ink-soft) !important;
+  background: transparent !important;
+}
+.modal .close-x:hover {
+  background: var(--line-soft) !important;
+  color: var(--ink) !important;
+}
+
+/* Info/error banners should remain legible in dark mode. */
+.error-banner {
+  background: #32171a !important;
+  color: #ffb4b4 !important;
+  border: 1px solid #5b282c;
+}
+.info-banner {
+  background: #11271d !important;
+  color: #9ee6bd !important;
+  border: 1px solid #245a3e;
+}
+
+/* Do not let hard-coded light table striping leak into dark mode. */
+table.dash tbody tr:nth-child(even) td {
+  background: rgba(255,255,255,.015) !important;
+}
+
+/* Ensure table text and headers remain visible. */
+table.dash th,
+table.dash td {
+  color: var(--ink);
+}
+table.dash th {
+  color: var(--ink-faint);
+}
+
+/* ================================================================
+   Learner + Parent/Guardian view
+   ================================================================ */
+.learner-profile-card {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+}
+.learner-profile-title {
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--ink);
+}
+.learner-contacts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 10px;
+}
+.learner-contact-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--panel-soft);
+  min-width: 0;
+}
+.contact-role { font-size: 12px; font-weight: 700; color: var(--brand); margin-bottom: 5px; }
+.contact-name { font-weight: 600; color: var(--ink); margin-bottom: 3px; }
+.contact-email { font-size: 12px; color: var(--ink-soft); overflow-wrap:anywhere; }
+.relationship-badge {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:3px 8px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:var(--line-soft);
+  color:var(--ink);
+  font-size:11px;
+  font-weight:700;
+  white-space:nowrap;
+}
+.relationship-badge.learner { color:var(--brand); border-color:var(--brand-line); background:var(--brand-tint); }
+.relationship-badge.father,
+.relationship-badge.mother,
+.relationship-badge.guardian { color:var(--ink); }
+
+/* Larger, easier-to-click selection controls. */
+.merge-check-col { width:42px !important; min-width:42px; text-align:center; }
+input[type="checkbox"].learner-merge-check,
+input[type="checkbox"]#select-all-learner,
+input[type="radio"].merge-radio {
+  width:18px !important;
+  height:18px !important;
+  min-width:18px;
+  min-height:18px;
+  margin:2px 0;
+  padding:0 !important;
+  accent-color:var(--brand);
+  cursor:pointer;
+  vertical-align:middle;
+}
+.learner-merge-check { transform:scale(1.05); }
+
+/* Dark-mode-safe controls: override older light-mode hard-coded values. */
+input, select, textarea, .reply-editor {
+  background:var(--paper) !important;
+  color:var(--ink) !important;
+  border-color:var(--line) !important;
+}
+input::placeholder, textarea::placeholder, .reply-editor:empty::before { color:var(--ink-faint) !important; }
+.rich-toolbar-btn,
+button.secondary {
+  background:var(--line-soft) !important;
+  color:var(--ink) !important;
+  border-color:var(--line) !important;
+}
+.rich-toolbar-btn:hover,
+button.secondary:hover { background:var(--line) !important; }
+.thread-message.inbound { background:var(--line-soft) !important; color:var(--ink) !important; }
+.thread-message.outbound { background:var(--brand-tint) !important; color:var(--ink) !important; border-color:var(--brand-line) !important; }
+.body-box { background:var(--line-soft) !important; color:var(--ink) !important; }
+.modal { background:var(--paper) !important; color:var(--ink) !important; border-color:var(--line) !important; }
+.modal .small, .modal label { color:var(--ink-soft); }
+.modal .info-banner { background:var(--panel-soft) !important; color:var(--ink) !important; border-color:var(--line) !important; }
+
+@media (max-width: 900px) {
+  .learner-contacts { grid-template-columns:repeat(2, minmax(150px, 1fr)); }
+}
+@media (max-width: 600px) {
+  .learner-contacts { grid-template-columns:1fr; }
+}

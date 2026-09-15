@@ -8,10 +8,14 @@ const state = {
   roster: [],
   tickets: [],
   filters: { mailbox_id: '', assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
-  statsFilters: { from_date: '', to_date: '' },
+  statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, unit: '#' },
   myStatsFilters: { from_date: '', to_date: '' },
+  personId: null,
+  showOverdue: false,
+  statsRange: 'month',
   page: 'tickets',
   openTicketId: null,
+  learnerEmail: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -46,12 +50,21 @@ const ADMIN_ONLY_PAGES = ['stats', 'mailboxes', 'roster'];
 function onHashChange() {
   const hash = (location.hash || '#tickets').replace('#', '');
   let page = hash.split('?')[0] || 'tickets';
-  // Agents (non-admins) only ever get the Tickets page - the other pages'
-  // APIs would 403 for them anyway, so don't even render them.
+
+  // When the user navigates back to the Dashboard from another tab,
+  // always return to the main Dashboard rather than the last person
+  // drill-down they opened.
+  if (page === 'stats') {
+    state.personId = null;
+    state.showOverdue = false;
+  }
+
+  // Agents (non-admins) only ever get the Tickets page.
   if (ADMIN_ONLY_PAGES.includes(page) && !(state.user && state.user.is_admin)) {
     page = 'tickets';
     location.hash = 'tickets';
   }
+
   state.page = page;
   renderApp();
 }
@@ -100,6 +113,19 @@ function renderLogin() {
 
 // ---------- Shell / layout ----------
 
+function initTheme() {
+  const saved = localStorage.getItem('mail-ticket-theme');
+  document.documentElement.dataset.theme = saved === 'light' ? 'light' : 'dark';
+}
+
+function updateThemeToggle() {
+  const dark = document.documentElement.dataset.theme !== 'light';
+  const icon = el('theme-toggle-icon');
+  const label = el('theme-toggle-label');
+  if (icon) icon.textContent = dark ? '☀' : '☾';
+  if (label) label.textContent = dark ? 'Light' : 'Dark';
+}
+
 function renderApp() {
   const app = document.getElementById('app');
   const nav = [
@@ -128,6 +154,7 @@ function renderApp() {
       </nav>
       <div class="user">
         <span>${escapeHtml(state.user.name)} (${escapeHtml(state.user.email)})</span>
+        <button class="secondary theme-toggle" id="theme-toggle" type="button"><span id="theme-toggle-icon">☀</span> <span id="theme-toggle-label">Light</span></button>
         <button class="secondary" id="my-account-btn">My account</button>
         <button class="secondary" id="logout-btn">Log out</button>
       </div>
@@ -146,6 +173,13 @@ function renderApp() {
     renderLogin();
   });
   el('my-account-btn').addEventListener('click', () => openEditMember(state.user.id));
+  el('theme-toggle').addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('mail-ticket-theme', next);
+    updateThemeToggle();
+  });
+  updateThemeToggle();
 
   const params = new URLSearchParams(location.search);
   const banner = [];
@@ -155,11 +189,12 @@ function renderApp() {
   const mainHtml = banner.join('');
   el('main').innerHTML = mainHtml;
 
-  if (state.page === 'stats') renderStats();
+ if (state.page === 'stats') { renderStats(); }
   else if (state.page === 'mystats') renderMyStats();
   else if (state.page === 'mailboxes') renderMailboxes();
   else if (state.page === 'roster') renderRoster();
   else if (state.page === 'officehours') renderOfficeHours();
+  else if (state.page === 'learner') renderLearner();
   else renderTickets();
 }
 
@@ -207,12 +242,32 @@ function toDatetimeLocal(iso) {
 async function renderTickets() {
   const main = el('main');
   const isAdmin = state.user.is_admin;
+
+  // Read ticket filters passed in the hash, e.g. when opening the
+  // Dashboard's Unassigned queue. This keeps the date range and assignee
+  // filter when moving from Dashboard -> Tickets.
+  const hashQuery = location.hash.includes('?')
+    ? location.hash.slice(location.hash.indexOf('?') + 1)
+    : '';
+  const hashParams = new URLSearchParams(hashQuery);
+  if (hashParams.has('assignee_id') || hashParams.has('from_date') || hashParams.has('to_date')) {
+    state.filters = {
+      ...state.filters,
+      assignee_id: hashParams.get('assignee_id') || '',
+      from_date: hashParams.get('from_date') || '',
+      to_date: hashParams.get('to_date') || '',
+    };
+  }
   main.insertAdjacentHTML('beforeend', `
     <div class="section-header">
       <h2 style="margin:0;">Tickets</h2>
     </div>
     ${!isAdmin ? '<p class="small">Showing tickets assigned to you.</p>' : ''}
     <div class="filters">
+      <div style="grid-column:1 / -1;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:2px;">
+        <strong style="font-size:14px;">Filters</strong>
+        <button type="button" class="secondary-btn" id="clear-ticket-filters" style="white-space:nowrap;">Clear filters</button>
+      </div>
       <div>
         <label>Mailbox</label>
         <select id="f-mailbox">
@@ -225,8 +280,8 @@ async function renderTickets() {
         <label>Assignee</label>
         <select id="f-assignee">
           <option value="">All</option>
-          <option value="unassigned">Unassigned</option>
-          ${state.roster.map((r) => `<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}
+          <option value="unassigned" ${state.filters.assignee_id === 'unassigned' ? 'selected' : ''}>Unassigned</option>
+          ${state.roster.map((r) => `<option value="${r.id}" ${String(state.filters.assignee_id) === String(r.id) ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
         </select>
       </div>
       ` : ''}
@@ -258,11 +313,11 @@ async function renderTickets() {
       </div>
       <div>
         <label>From date</label>
-        <input type="date" id="f-from" />
+        <input type="date" id="f-from" value="${escapeHtml(state.filters.from_date)}" />
       </div>
       <div>
         <label>To date</label>
-        <input type="date" id="f-to" />
+        <input type="date" id="f-to" value="${escapeHtml(state.filters.to_date)}" />
       </div>
     </div>
     <div id="ticket-table-wrap"><em>Loading tickets...</em></div>
@@ -278,6 +333,19 @@ async function renderTickets() {
       clearTimeout(debounce);
       debounce = setTimeout(applyFiltersAndReload, 350);
     });
+  });
+
+  el('clear-ticket-filters').addEventListener('click', () => {
+    el('f-mailbox').value = '';
+    if (el('f-assignee')) el('f-assignee').value = '';
+    el('f-status').value = '';
+    el('f-automated').value = '';
+    if (el('f-learner')) el('f-learner').value = '';
+    el('f-q').value = '';
+    el('f-tag').value = '';
+    el('f-from').value = '';
+    el('f-to').value = '';
+    applyFiltersAndReload();
   });
 
   await loadTickets();
@@ -299,11 +367,21 @@ function applyFiltersAndReload() {
 }
 
 async function loadTickets() {
-  const params = new URLSearchParams();
-  Object.entries(state.filters).forEach(([k, v]) => { if (v) params.set(k, v); });
-  const { tickets } = await api(`/tickets?${params.toString()}`);
-  state.tickets = tickets;
-  renderTicketTable();
+  const wrap = el('ticket-table-wrap');
+  if (wrap) wrap.innerHTML = '<em>Loading tickets...</em>';
+
+  try {
+    const params = new URLSearchParams();
+    Object.entries(state.filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+    const { tickets } = await api(`/tickets?${params.toString()}`);
+    state.tickets = tickets || [];
+    renderTicketTable();
+  } catch (err) {
+    console.error('Failed to load tickets:', err);
+    if (wrap) {
+      wrap.innerHTML = `<div class="error-banner"><strong>Failed to load tickets</strong><br>${escapeHtml(err.message || 'Unknown error')}<br><br><small>Open browser DevTools → Console for the exact API error.</small></div>`;
+    }
+  }
 }
 
 function renderTicketTable() {
@@ -319,7 +397,11 @@ function renderTicketTable() {
         <tr>
           <th>Received</th>
           <th>Mailbox</th>
-          <th>From</th>
+          <th>Learner Name</th>
+          <th>Learner Email</th>
+          <th>Student ID</th>
+          <th>Raised</th>
+          <th>Open</th>
           <th>Subject</th>
           <th>Assignee</th>
           <th>Status</th>
@@ -334,6 +416,9 @@ function renderTicketTable() {
   `;
   document.querySelectorAll('tr.ticket-row').forEach((tr) => {
     tr.addEventListener('click', () => openTicket(Number(tr.dataset.id)));
+  });
+  document.querySelectorAll('.learner-link').forEach((link) => {
+    link.addEventListener('click', (e) => e.stopPropagation());
   });
 }
 
@@ -352,7 +437,13 @@ function rowHtml(t) {
     <tr class="ticket-row" data-id="${t.id}">
       <td>${fmtDate(t.received_at)}</td>
       <td>${escapeHtml(t.mailbox_email || '')}</td>
-      <td>${escapeHtml(t.from_address || '')}</td>
+      <td>
+        ${t.learner_name ? `<a href="#learner?email=${encodeURIComponent(t.learner_email || extractEmail(t.from_address) || t.from_address)}" class="learner-link" data-learner-email="${escapeHtml(t.learner_email || extractEmail(t.from_address) || t.from_address)}">${escapeHtml(t.learner_name)}</a>` : 'Unknown learner'}
+      </td>
+      <td>${escapeHtml(t.learner_email || extractEmail(t.from_address) || '')}</td>
+      <td>${escapeHtml(t.student_id || '—')}</td>
+      <td>${t.learner_ticket_count != null ? t.learner_ticket_count : '—'}</td>
+      <td>${t.learner_open_count != null ? t.learner_open_count : '—'}</td>
       <td>${escapeHtml(t.subject || '(no subject)')}
         ${t.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </td>
@@ -362,6 +453,375 @@ function rowHtml(t) {
       <td>${t.tags.map((tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')}</td>
     </tr>
   `;
+}
+
+
+// ---------- Learner dashboard ----------
+
+function learnerSlaClass(percent) {
+  if (percent == null) return 'nil';
+  if (percent >= 90) return 'ok';
+  if (percent >= 75) return 'warn';
+  return 'bad';
+}
+
+function learnerStatusLabel(status) {
+  return ({
+    unassigned: 'Unassigned',
+    assigned: 'First response pending',
+    replied: 'Open',
+    closed: 'Closed',
+  })[status] || status;
+}
+
+async function renderLearner() {
+  const main = el('main');
+  const hashQuery = location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?') + 1) : '';
+  const params = new URLSearchParams(hashQuery);
+  const email = params.get('email') || '';
+  state.learnerEmail = email;
+
+  main.innerHTML = `
+    <button class="back-link" id="learner-back">← Back to Tickets</button>
+    <div id="learner-dashboard-wrap"><em>Loading learner details...</em></div>
+  `;
+  el('learner-back').addEventListener('click', () => { location.hash = 'tickets'; });
+
+  if (!email) {
+    el('learner-dashboard-wrap').innerHTML = '<div class="error-banner">Learner email is missing.</div>';
+    return;
+  }
+
+  try {
+    const data = await api(`/tickets/learner/${encodeURIComponent(email)}`);
+    // The URL can originate from a parent/guardian ticket. Always switch to
+    // the canonical learner email returned by the backend for the dashboard.
+    const canonicalLearnerEmail = (data.learner && data.learner.email) || email;
+    state.learnerEmail = canonicalLearnerEmail;
+    const wrap = el('learner-dashboard-wrap');
+    const c = data.counts || {};
+    const status = data.by_status || {};
+    const sla = data.sla || {};
+    const mailbox = data.by_mailbox || [];
+    const maxMailbox = Math.max(1, ...mailbox.map((m) => Number(m.count || 0)));
+    const maxStatus = Math.max(1, ...Object.values(status).map(Number));
+    const slaCls = learnerSlaClass(sla.percent);
+    const fatherContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase() === 'father') || {};
+    const motherContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase() === 'mother') || {};
+    const guardianContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase().includes('guardian')) || {};
+    const fatherName = data.learner.father_name || fatherContact.name || 'Not mapped';
+    const motherName = data.learner.mother_name || motherContact.name || 'Not mapped';
+    const guardianName = data.learner.guardian_name || guardianContact.name || 'Not mapped';
+
+    wrap.innerHTML = `
+      <div class="section-header">
+        <div>
+          <h2 style="margin:0;">Learner Dashboard</h2>
+          <div class="small" style="margin-top:4px;">${escapeHtml(data.learner.name || 'Learner')} · ${escapeHtml(canonicalLearnerEmail)}</div>
+        </div>
+        <div class="small">Student ID: <strong>${escapeHtml(data.learner.student_id || 'Not mapped')}</strong></div>
+      </div>
+
+      <div class="card learner-family-section" style="margin-top:12px;">
+        <div style="font-weight:700;margin-bottom:10px;">Family / Registered Contacts</div>
+        <div class="learner-family-strip" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
+          <div class="learner-contact-card">
+            <div class="small">Father</div>
+            <strong>${escapeHtml(fatherName)}</strong>
+            <div class="small">${escapeHtml(data.learner.father_email || fatherContact.email || '—')}</div>
+          </div>
+          <div class="learner-contact-card">
+            <div class="small">Mother</div>
+            <strong>${escapeHtml(motherName)}</strong>
+            <div class="small">${escapeHtml(data.learner.mother_email || motherContact.email || '—')}</div>
+          </div>
+          <div class="learner-contact-card">
+            <div class="small">Local Guardian</div>
+            <strong>${escapeHtml(guardianName)}</strong>
+            <div class="small">${escapeHtml(data.learner.guardian_email || guardianContact.email || '—')}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tiles" style="margin-top:12px;">
+        <div class="tile"><p class="k">Total raised</p><p class="v">${c.total || 0}</p></div>
+        <div class="tile"><p class="k">Currently open</p><p class="v">${c.open || 0}</p></div>
+        <div class="tile"><p class="k">Resolved / Closed</p><p class="v">${c.closed || 0}</p></div>
+        <div class="tile"><p class="k">First response pending</p><p class="v">${c.first_response_pending || 0}</p></div>
+        <div class="tile"><p class="k">SLA</p><p class="v ${slaCls}">${sla.percent != null ? `${sla.percent}%` : '—'}</p><p class="c">${sla.total ? `${sla.met}/${sla.total} met` : 'No eligible tickets'}</p></div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="card stat-card">
+          <h3>Tickets by status</h3>
+          ${['unassigned','assigned','replied','closed'].map((key) => `
+            <div class="stat-row">
+              <span>${learnerStatusLabel(key)}</span>
+              <strong>${status[key] || 0}</strong>
+            </div>
+            <div style="height:6px;background:var(--line-soft);border-radius:4px;margin:-4px 0 9px;overflow:hidden;">
+              <div style="height:100%;width:${Math.round(((status[key] || 0) / maxStatus) * 100)}%;background:var(--brand);border-radius:4px;"></div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="card stat-card">
+          <h3>Tickets by mailbox</h3>
+          ${mailbox.length ? mailbox.map((m) => `
+            <div class="stat-row"><span>${escapeHtml(m.mailbox)}</span><strong>${m.count}</strong></div>
+            <div style="height:6px;background:var(--line-soft);border-radius:4px;margin:-4px 0 9px;overflow:hidden;">
+              <div style="height:100%;width:${Math.round((Number(m.count) / maxMailbox) * 100)}%;background:var(--brand);border-radius:4px;"></div>
+            </div>
+          `).join('') : '<p class="small">No mailbox history.</p>'}
+        </div>
+
+        <div class="card stat-card">
+          <h3>SLA details</h3>
+          <div class="stat-row"><span>Overall SLA</span><strong>${sla.percent != null ? `${sla.percent}%` : '—'}</strong></div>
+          <div class="stat-row"><span>Met</span><strong>${sla.met || 0}</strong></div>
+          <div class="stat-row"><span>Missed</span><strong>${sla.missed || 0}</strong></div>
+          <div class="stat-row"><span>First response target</span><strong>${sla.first_response_target_hours || 24}h</strong></div>
+          <div class="stat-row"><span>Resolution target</span><strong>${sla.resolution_target_hours || 72}h</strong></div>
+        </div>
+      </div>
+
+      <div class="dash-card" style="margin-top:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+          <div class="cap" style="margin:0;">Tickets for this learner <span id="learner-ticket-count">(${data.tickets.length})</span></div>
+          <button type="button" class="secondary-btn" id="learner-clear-filters">Clear filters</button>
+        </div>
+
+        <div class="card" style="margin:12px 0 14px;padding:12px;">
+          <div style="font-weight:700;margin-bottom:9px;">Filter tickets</div>
+          <div style="display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) minmax(240px,1.5fr);gap:10px;align-items:end;">
+            <label class="small">
+              Raised by
+              <select id="learner-raised-by-filter" style="width:100%;margin-top:4px;">
+                <option value="all">All</option>
+                <option value="student">Student</option>
+                <option value="father">Father</option>
+                <option value="mother">Mother</option>
+                <option value="guardian">Local Guardian</option>
+                <option value="other">Other / Unknown</option>
+              </select>
+            </label>
+            <label class="small">
+              Status
+              <select id="learner-status-filter" style="width:100%;margin-top:4px;">
+                <option value="all">All</option>
+                <option value="unassigned">Unassigned</option>
+                <option value="assigned">First response pending</option>
+                <option value="replied">Open</option>
+                <option value="closed">Closed</option>
+              </select>
+            </label>
+            <label class="small">
+              Search subject / email / ticket ID
+              <input id="learner-ticket-search" type="search" placeholder="Search..." style="width:100%;margin-top:4px;box-sizing:border-box;">
+            </label>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px;padding:12px 0 10px;border-top:1px solid var(--line-soft);">
+          <div class="small">Select 2 or more related tickets to merge them into one primary ticket.</div>
+          <button type="button" class="secondary-btn" id="merge-selected-btn" disabled>Merge selected (0)</button>
+        </div>
+        <div id="learner-ticket-table-wrap"></div>
+      </div>
+    `;
+
+    const ticketTableWrap = el('learner-ticket-table-wrap');
+    const raisedByFilter = el('learner-raised-by-filter');
+    const statusFilter = el('learner-status-filter');
+    const searchInput = el('learner-ticket-search');
+    const ticketCount = el('learner-ticket-count');
+    const clearFiltersBtn = el('learner-clear-filters');
+
+    function raisedByKey(ticket) {
+      const relationship = String(ticket.sender_relationship || 'Learner').trim().toLowerCase();
+      if (relationship === 'learner' || relationship === 'student') return 'student';
+      if (relationship.includes('father')) return 'father';
+      if (relationship.includes('mother')) return 'mother';
+      if (relationship.includes('guardian')) return 'guardian';
+      return 'other';
+    }
+
+    function renderLearnerTickets() {
+      const raisedBy = raisedByFilter.value;
+      const statusValue = statusFilter.value;
+      const search = String(searchInput.value || '').trim().toLowerCase();
+
+      const filteredTickets = data.tickets.filter((t) => {
+        if (raisedBy !== 'all' && raisedByKey(t) !== raisedBy) return false;
+        if (statusValue !== 'all' && String(t.status || '').toLowerCase() !== statusValue) return false;
+
+        if (search) {
+          const haystack = [
+            t.id,
+            t.subject,
+            t.from_address,
+            t.sender_name,
+            t.sender_relationship,
+          ].map((value) => String(value == null ? '' : value).toLowerCase()).join(' ');
+          if (!haystack.includes(search)) return false;
+        }
+
+        return true;
+      });
+
+      ticketCount.textContent = `(${filteredTickets.length} of ${data.tickets.length})`;
+
+      if (!filteredTickets.length) {
+        ticketTableWrap.innerHTML = '<p class="small" style="padding:16px;">No tickets match the selected filters.</p>';
+        return;
+      }
+
+      ticketTableWrap.innerHTML = `
+        <div style="overflow:auto;">
+          <table class="dash">
+            <thead><tr><th style="width:36px;"><input type="checkbox" id="select-all-learner" title="Select all mergeable tickets"></th><th>Received</th><th>Sender</th><th>Raised By</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
+            <tbody>
+              ${filteredTickets.map((t) => `
+                <tr class="link-row learner-ticket-row" data-id="${t.id}">
+                  <td>${t.is_merged ? '' : `<input type="checkbox" class="learner-merge-check" data-id="${t.id}" aria-label="Select ticket ${t.id}">`}</td>
+                  <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
+                  <td>${escapeHtml(t.from_address || '')}</td>
+                  <td>${escapeHtml(t.sender_relationship || 'Learner')}</td>
+                  <td>${escapeHtml(t.mailbox_email || '')}</td>
+                  <td>${escapeHtml(t.subject || '(no subject)')}</td>
+                  <td>${escapeHtml(t.assignee_name || '—')}</td>
+                  <td>${t.is_merged ? `<span class="badge">Merged → #${escapeHtml(t.merged_into_ticket_id)}</span>` : `<span class="badge ${escapeHtml(t.status)}">${escapeHtml(learnerStatusLabel(t.status))}</span>`}</td>
+                  <td>${escapeHtml(t.tat && t.tat.first_response ? (t.tat.first_response.human || '—') : '—')}</td>
+                  <td>${escapeHtml(t.tat && t.tat.resolution ? (t.tat.resolution.human || '—') : '—')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+
+      ticketTableWrap.querySelectorAll('.learner-ticket-row').forEach((row) => {
+        row.addEventListener('click', (event) => {
+          if (event.target.closest('input[type="checkbox"]')) return;
+          openTicket(Number(row.dataset.id));
+        });
+      });
+
+      ticketTableWrap.querySelectorAll('.learner-merge-check').forEach((check) => {
+        check.addEventListener('click', (event) => event.stopPropagation());
+      });
+
+      const updateMergeButton = () => {
+        const selected = [...ticketTableWrap.querySelectorAll('.learner-merge-check:checked')];
+        const btn = el('merge-selected-btn');
+        if (btn) {
+          btn.disabled = selected.length < 2 || !state.user.is_admin;
+          btn.textContent = `Merge selected (${selected.length})`;
+        }
+        const selectAll = el('select-all-learner');
+        if (selectAll) {
+          const checks = [...ticketTableWrap.querySelectorAll('.learner-merge-check')];
+          selectAll.checked = checks.length > 0 && checks.every((x) => x.checked);
+        }
+      };
+
+      ticketTableWrap.querySelectorAll('.learner-merge-check').forEach((check) => {
+        check.addEventListener('change', updateMergeButton);
+      });
+
+      const selectAll = el('select-all-learner');
+      if (selectAll) {
+        selectAll.addEventListener('click', (event) => event.stopPropagation());
+        selectAll.addEventListener('change', () => {
+          ticketTableWrap.querySelectorAll('.learner-merge-check').forEach((check) => {
+            check.checked = selectAll.checked;
+          });
+          updateMergeButton();
+        });
+      }
+
+      const mergeBtn = el('merge-selected-btn');
+      if (mergeBtn) mergeBtn.onclick = () => openMergeLearnerModal(data);
+      updateMergeButton();
+    }
+
+    [raisedByFilter, statusFilter].forEach((control) => {
+      control.addEventListener('change', renderLearnerTickets);
+    });
+    searchInput.addEventListener('input', renderLearnerTickets);
+    clearFiltersBtn.addEventListener('click', () => {
+      raisedByFilter.value = 'all';
+      statusFilter.value = 'all';
+      searchInput.value = '';
+      renderLearnerTickets();
+    });
+
+    renderLearnerTickets();
+  } catch (err) {
+    el('learner-dashboard-wrap').innerHTML = `<div class="error-banner">Failed to load learner details: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function openMergeLearnerModal(data) {
+  const selectedIds = [...document.querySelectorAll('.learner-merge-check:checked')].map((x) => Number(x.dataset.id));
+  if (selectedIds.length < 2) return;
+  const selected = data.tickets.filter((t) => selectedIds.includes(Number(t.id)));
+  selected.sort((a, b) => new Date(a.first_received_at || a.received_at) - new Date(b.first_received_at || b.received_at));
+  const defaultPrimary = selected[0];
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.id = 'merge-ticket-modal';
+  backdrop.innerHTML = `
+    <div class="modal" style="max-width:760px;">
+      <button class="close-x" id="merge-close-x">&times;</button>
+      <h2>Merge ${selected.length} tickets</h2>
+      <p class="small">These tickets belong to <strong>${escapeHtml(data.learner.name || 'this learner')}</strong>. Choose the primary ticket. The other tickets will be marked as merged and their original history will be preserved.</p>
+      <div style="display:grid;gap:8px;margin-top:14px;">
+        ${selected.map((t) => `
+          <label style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line-soft);border-radius:10px;padding:12px;cursor:pointer;">
+            <input type="radio" name="merge-primary" value="${t.id}" ${Number(t.id) === Number(defaultPrimary.id) ? 'checked' : ''}>
+            <span><strong>#${t.id}</strong> · ${escapeHtml(t.mailbox_email || '')}<br><span class="small">${escapeHtml(t.subject || '(no subject)')} · ${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</span>${Number(t.id) === Number(defaultPrimary.id) ? '<br><span class="small">Recommended: oldest ticket</span>' : ''}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div style="margin-top:14px;padding:12px;border-radius:8px;background:var(--panel-soft);" class="small">
+        <strong>What will happen:</strong><br>
+        • The selected primary ticket remains the main ticket.<br>
+        • Other tickets become <strong>Merged</strong> and link back to the primary ticket.<br>
+        • Original mailbox, conversation, SLA and TAT history are preserved.<br>
+        • Nothing is deleted.
+      </div>
+      <div id="merge-error" style="margin-top:10px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+        <button class="btn" id="merge-cancel-btn">Cancel</button>
+        <button class="btn primary" id="merge-confirm-btn">Merge tickets</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  el('merge-close-x').addEventListener('click', close);
+  el('merge-cancel-btn').addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  el('merge-confirm-btn').addEventListener('click', async () => {
+    const primary = Number(backdrop.querySelector('input[name="merge-primary"]:checked')?.value);
+    const btn = el('merge-confirm-btn');
+    const error = el('merge-error');
+    btn.disabled = true;
+    try {
+      await api(`/tickets/learner/${encodeURIComponent(data.learner.email)}/merge`, {
+        method: 'POST',
+        body: JSON.stringify({ ticket_ids: selectedIds, primary_ticket_id: primary }),
+      });
+      close();
+      await renderLearner();
+    } catch (err) {
+      error.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
+      btn.disabled = false;
+    }
+  });
 }
 
 // ---------- Ticket detail modal ----------
@@ -945,210 +1405,527 @@ async function renderOfficeHours() {
 
 // ---------- Stats / dashboard ----------
 
+// ===================================================================
+// Dashboard + person drilldown — for public/app.js
+//
+// Replaces these three existing functions:
+//     renderStats()
+//     applyStatsFiltersAndReload()
+//     renderStatsData()
+// Delete those, paste this block in their place. renderMailboxPicker
+// stays as it is.
+//
+// Also change the statsFilters line near the top of the file to:
+//   statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, unit: '#' },
+// ===================================================================
+
+// Presets set the range AND the grouping together, so the period table
+// never ends up with 400 rows or 1. Ranges are computed client-side; the
+// server only ever sees plain from_date/to_date.
+const RANGES = {
+  current: { label: 'Current', days: null, group: 'day' },
+  week: { label: 'This week', days: 7, group: 'day' },
+  month: { label: 'This month', days: 30, group: 'week' },
+  quarter: { label: 'This quarter', days: 90, group: 'week' },
+  custom: { label: 'Custom', days: null, group: 'week' },
+};
+
+// SLA targets, in wall-clock hours. Drive the SLA calculation and TAT dots.
+// Move to app_settings when different mailboxes need different numbers.
+const FIRST_REPLY_TARGET_H = 24;
+const RESOLUTION_TARGET_H = 72;
+
+function isoDaysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function resolvedRange() {
+  const f = state.statsFilters;
+
+  // Current = live "as of now" view. No received-date filter is applied.
+  // This shows the current state of tickets regardless of when they arrived.
+  if (f.preset === 'current') {
+    return { from: '', to: '', group: RANGES.current.group };
+  }
+
+  if (f.preset === 'custom') {
+    return { from: f.from_date, to: f.to_date, group: RANGES.custom.group };
+  }
+
+  const r = RANGES[f.preset] || RANGES.month;
+  return { from: isoDaysAgo(r.days), to: '', group: r.group };
+}
+
+function statsParams() {
+  const { from, to } = resolvedRange();
+  const p = new URLSearchParams();
+  if (from) p.set('from_date', from);
+  if (to) p.set('to_date', to);
+  // Not a truthiness check: [] is truthy in JS, and an empty selection must
+  // still be sent so the server shows zeros instead of silently defaulting.
+  if (state.statsFilters.mailbox_ids !== null) {
+    p.set('mailboxIds', state.statsFilters.mailbox_ids.join(','));
+  }
+  return p;
+}
+
+function rangeRowHtml(idPrefix) {
+  const f = state.statsFilters;
+  return `
+    <div class="range-row">
+      ${Object.entries(RANGES).map(([k, r]) => `
+        <button class="range-pill ${f.preset === k ? 'on' : ''}" data-preset="${k}">${r.label}</button>
+      `).join('')}
+      ${f.preset === 'custom' ? `
+        <span class="range-dates">
+          <input type="date" id="${idPrefix}-from" value="${escapeHtml(f.from_date)}" />
+          <span class="small">to</span>
+          <input type="date" id="${idPrefix}-to" value="${escapeHtml(f.to_date)}" />
+        </span>` : ''}
+      <div id="${idPrefix}-mailboxes" style="position:relative; margin-left:auto;"></div>
+    </div>`;
+}
+
+function wireRangeRow(idPrefix, reload) {
+  document.querySelectorAll(`.range-pill[data-preset]`).forEach((b) => {
+    b.addEventListener('click', () => {
+      state.statsFilters = { ...state.statsFilters, preset: b.dataset.preset };
+      reload();
+    });
+  });
+  const from = el(`${idPrefix}-from`);
+  const to = el(`${idPrefix}-to`);
+  if (from) from.addEventListener('change', () => {
+    state.statsFilters = { ...state.statsFilters, from_date: from.value };
+    reload();
+  });
+  if (to) to.addEventListener('change', () => {
+    state.statsFilters = { ...state.statsFilters, to_date: to.value };
+    reload();
+  });
+}
+
+// Two letters beat a photo here: no upload, no maintenance, and it gives the
+// eye an anchor per row so scanning eight similar-length names is fast.
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+// Colour alone must never carry the meaning, so the dot always sits beside a
+// value that is itself tinted - two signals, not one.
+function tatCell(tat, targetHours) {
+  if (!tat || tat.avg_seconds == null) return '<td class="nil">—</td>';
+  const hrs = tat.avg_seconds / 3600;
+  const cls = hrs >= targetHours ? 'bad' : hrs >= targetHours * 0.6 ? 'warn' : '';
+  return `<td class="${cls}"><span class="dot ${cls || 'ok'}"></span>${escapeHtml(tat.avg_human)}</td>`;
+}
+
+function slaCell(sla) {
+  if (!sla || sla.percent == null) return '<td class="nil">—</td>';
+  const cls = sla.percent >= 90 ? 'ok' : sla.percent >= 75 ? 'warn' : 'bad';
+  return `<td class="${cls}" title="${sla.met} of ${sla.total} tickets met both SLA targets"><span class="dot ${cls}"></span>${sla.percent}%<span class="small" style="margin-left:5px;">(${sla.met}/${sla.total})</span></td>`;
+}
+
+// ------------------------------------------------------------------ dashboard
+
 async function renderStats() {
   const main = el('main');
-  main.insertAdjacentHTML('beforeend', `
-    <div class="section-header">
-      <h2 style="margin:0;">Dashboard</h2>
-    </div>
-    <div class="filters">
-      <div>
-        <label>From date</label>
-        <input type="date" id="s-from" value="${escapeHtml(state.statsFilters.from_date)}" />
-      </div>
-      <div>
-        <label>To date</label>
-        <input type="date" id="s-to" value="${escapeHtml(state.statsFilters.to_date)}" />
-      </div>
-      <div style="align-self:flex-end;">
-        <button class="secondary" id="s-clear">Clear dates</button>
-      </div>
-    </div>
-    <div id="stats-wrap"><em>Loading...</em></div>
-  `);
-
-  el('s-from').addEventListener('change', applyStatsFiltersAndReload);
-  el('s-to').addEventListener('change', applyStatsFiltersAndReload);
-  el('s-clear').addEventListener('click', () => {
-    state.statsFilters = { from_date: '', to_date: '' };
-    renderStatsData();
-    el('s-from').value = '';
-    el('s-to').value = '';
-  });
-
+  main.insertAdjacentHTML('beforeend', `<div id="dash-root"><em class="small">Loading…</em></div>`);
   await renderStatsData();
 }
 
-function applyStatsFiltersAndReload() {
-  state.statsFilters = {
-    from_date: el('s-from').value,
-    to_date: el('s-to').value,
+async function renderStatsData() {
+  const root = el('dash-root');
+  const statsQuery = statsParams();
+
+  // Unassigned is ONE dashboard queue count, supplied by /api/stats.
+  // The backend uses SQL COUNT(*) with the same Dashboard date range and
+  // mailbox scope, so this is an exact count and is not limited by the
+  // Tickets endpoint's LIMIT 500.
+  const data = await api(`/stats?${statsQuery.toString()}`);
+  const unit = state.statsFilters.unit || '#';
+
+  // Row percentages: of THIS person's tickets, how many are in each status.
+  // Answers "is this person keeping up". For workload share instead, divide
+  // by the team total rather than the row total on the next line.
+  const cell = (n, rowTotal) => {
+    if (unit === '%' && rowTotal > 0) return `${Math.round((n / rowTotal) * 100)}%`;
+    return n;
   };
+
+  const people = data.per_assignee.filter((p) => p.counts.total > 0);
+  const maxTotal = people.reduce((m, p) => Math.max(m, p.counts.total), 0);
+  const teamTotals = people.reduce((acc, p) => {
+    ['assigned', 'replied', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k]; });
+    return acc;
+  }, { assigned: 0, replied: 0, closed: 0, total: 0 });
+
+  // Top tiles are status totals. Include the unassigned bucket for replied/closed,
+  // while keeping the per-person table based only on assigned people.
+
+  root.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h2 style="margin:0;">Dashboard</h2>
+        <p class="meta">${data.total_tickets} tickets · ${data.automated_excluded_total} automated excluded${
+          data.mailbox_filter && data.mailbox_filter.excluded.length
+            ? ` · excluding ${data.mailbox_filter.excluded.map(escapeHtml).join(', ')}` : ''
+        }</p>
+      </div>
+      <div class="unit-toggle">
+        <span class="${unit === '#' ? 'on' : ''}" data-unit="#">#</span>
+        <span class="${unit === '%' ? 'on' : ''}" data-unit="%">%</span>
+      </div>
+    </div>
+
+    ${rangeRowHtml('s')}
+
+    <div class="tiles">
+      ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>` : ''}
+      <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.unassigned}</p></div>
+      <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
+      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + data.unassigned.replied}</p></div>
+      <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed + data.unassigned.closed}</p></div>
+      <div class="tile"><p class="k">Team SLA</p><p class="v">${data.sla && data.sla.percent != null ? `${data.sla.percent}%` : '—'}</p><p class="c">${data.sla ? `${data.sla.met}/${data.sla.total} met` : ''}</p></div>
+    </div>
+
+    <div class="dash-card">
+      <table class="dash">
+        <thead><tr>
+          <th>Person</th><th>Assigned</th><th>Replied</th><th>Closed</th>
+          <th>Total</th><th>SLA</th><th>1st response</th><th>Resolution</th>
+        </tr></thead>
+        <tbody>
+          ${people.map((p) => `
+            <tr class="link-row" data-member="${p.member.id}">
+              <td class="name">
+                <span class="who">
+                  <span class="avatar">${initials(p.member.name)}</span>
+                  <span>${escapeHtml(p.member.name)}</span>
+                </span>
+              </td>
+              <td>${cell(p.counts.assigned, p.counts.total)}</td>
+              <td>${cell(p.counts.replied, p.counts.total)}</td>
+              <td>${cell(p.counts.closed, p.counts.total)}</td>
+              <td class="strong">
+                ${p.counts.total}
+                <span class="share"><span style="width:${maxTotal ? Math.round((p.counts.total / maxTotal) * 100) : 0}%"></span></span>
+              </td>
+              ${slaCell(p.sla)}
+              ${tatCell(p.tat.first_response, FIRST_REPLY_TARGET_H)}
+              ${tatCell(p.tat.resolution, RESOLUTION_TARGET_H)}
+            </tr>`).join('')}
+        </tbody>
+        <tfoot><tr>
+          <td><span class="who"><span class="avatar blank"></span><span>Team total</span></span></td>
+          <td>${cell(teamTotals.assigned, teamTotals.total)}</td>
+          <td>${cell(teamTotals.replied, teamTotals.total)}</td>
+          <td>${cell(teamTotals.closed, teamTotals.total)}</td>
+          <td>${teamTotals.total}</td>
+          ${slaCell(data.sla)}
+          <td>${data.tat.first_response.avg_human || '—'}</td>
+          <td>${data.tat.resolution.avg_human || '—'}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+    <p class="small">Click a name for their history.</p>`;
+
+  wireRangeRow('s', renderStatsData);
+  root.querySelectorAll('.unit-toggle span[data-unit]').forEach((s) => {
+    s.addEventListener('click', () => {
+      state.statsFilters = { ...state.statsFilters, unit: s.dataset.unit };
+      renderStatsData();
+    });
+  });
+  root.querySelectorAll('tr.link-row[data-member]').forEach((tr) => {
+    tr.addEventListener('click', () => renderPerson(parseInt(tr.dataset.member, 10)));
+  });
+
+  // Open the Unassigned filter using the same Dashboard date range.
+  // The Dashboard count itself comes from SQL COUNT(*) in /api/stats;
+  // the Tickets page is only the drill-down/filter view.
+  const unassignedTile = root.querySelector('[data-unassigned-queue]');
+  if (unassignedTile) {
+    const openUnassignedQueue = () => {
+      const { from, to } = resolvedRange();
+      const p = new URLSearchParams();
+      p.set('assignee_id', 'unassigned');
+      if (from) p.set('from_date', from);
+      if (to) p.set('to_date', to);
+      location.hash = `tickets?${p.toString()}`;
+    };
+    unassignedTile.addEventListener('click', openUnassignedQueue);
+    unassignedTile.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openUnassignedQueue();
+      }
+    });
+  }
+
+  renderMailboxPicker('s-mailboxes', data.mailbox_filter, (ids) => {
+    state.statsFilters = { ...state.statsFilters, mailbox_ids: ids };
+    renderStatsData();
+  });
+}
+
+// ------------------------------------------------------------------ person
+
+async function renderPerson(memberId) {
+  state.personId = memberId;
+  state.showOverdue = false;
+  await renderPersonData();
+}
+
+async function renderPersonData() {
+  const root = el('dash-root');
+  root.innerHTML = '<em class="small">Loading…</em>';
+  const { group } = resolvedRange();
+  const p = statsParams();
+  p.set('group', group);
+  const d = await api(`/stats/person/${state.personId}?${p.toString()}`);
+
+  const worse = (mine, avg, lowerIsBetter) => {
+    if (mine == null || avg == null) return '';
+    return (lowerIsBetter ? mine > avg : mine < avg) ? ' worse' : '';
+  };
+  const fr = d.totals.first_response.avg_seconds;
+  const frAvg = d.team_avg.first_response.avg_seconds;
+  const res = d.totals.resolution.avg_seconds;
+  const resAvg = d.team_avg.resolution.avg_seconds;
+  const bucketLabel = { day: 'Day', week: 'Week of', month: 'Month' }[d.group] || 'Period';
+
+  root.innerHTML = `
+    <button class="back-link" id="p-back">← Back to dashboard</button>
+
+    <div class="person-head">
+      <span class="avatar lg">${initials(d.member.name)}</span>
+      <div>
+        <h2 style="margin:0;">${escapeHtml(d.member.name)}</h2>
+        <p class="meta">${escapeHtml(d.member.email)} · ${d.totals.open + d.totals.closed} tickets in range</p>
+      </div>
+    </div>
+
+    ${d.overdue_tickets.length ? `
+      <div class="ribbon">
+        <span class="msg">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>
+          </svg>
+          ${d.overdue_tickets.length} ticket${d.overdue_tickets.length > 1 ? 's' : ''} open longer than
+          ${d.overdue_hours} hours — oldest is ${Math.round(d.overdue_tickets[0].waiting_hours / 24)} days
+        </span>
+        <button class="link" id="p-toggle">${state.showOverdue ? 'Hide' : 'View them'}</button>
+      </div>` : `
+      <p class="all-clear">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        Nothing open beyond ${d.overdue_hours} hours
+      </p>`}
+
+    ${state.showOverdue && d.overdue_tickets.length ? `
+      <div class="dash-card">
+        <table class="dash">
+          <thead><tr><th>Subject</th><th>Mailbox</th><th>Status</th><th>Waiting</th></tr></thead>
+          <tbody>
+            ${d.overdue_tickets.map((t) => `
+              <tr class="overdue">
+                <td>${escapeHtml(t.subject || '(no subject)')}</td>
+                <td>${escapeHtml(t.mailbox.split('@')[0])}</td>
+                <td><span class="badge ${t.status}">${t.status}</span></td>
+                <td class="alert">${t.waiting_hours >= 48
+                  ? `${Math.round(t.waiting_hours / 24)}d` : `${t.waiting_hours}h`}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : ''}
+
+    ${rangeRowHtml('p')}
+
+    <div class="tiles">
+      <div class="tile"><p class="k">Open now</p><p class="v">${d.totals.open}</p>
+        <p class="c${worse(d.totals.open, d.team_avg.open, true)}">team avg ${d.team_avg.open}</p></div>
+      <div class="tile"><p class="k">Closed</p><p class="v">${d.totals.closed}</p>
+        <p class="c">team avg ${d.team_avg.closed}</p></div>
+      <div class="tile"><p class="k">1st response</p><p class="v">${d.totals.first_response.avg_human || '—'}</p>
+        <p class="c${worse(fr, frAvg, true)}">team avg ${d.team_avg.first_response.avg_human || '—'}</p></div>
+      <div class="tile"><p class="k">Resolution</p><p class="v">${d.totals.resolution.avg_human || '—'}</p>
+        <p class="c${worse(res, resAvg, true)}">team avg ${d.team_avg.resolution.avg_human || '—'}</p></div>
+    </div>
+
+    <div class="dash-card">
+      <table class="dash">
+        <thead><tr>
+          <th>${bucketLabel}</th><th>Received</th><th>Replied</th><th>Closed</th>
+          <th>1st response</th><th>Resolution</th>
+        </tr></thead>
+        <tbody>
+          ${d.periods.length ? d.periods.slice().reverse().map((r) => `
+            <tr>
+              <td>${r.bucket}</td>
+              <td>${r.received}</td><td>${r.replied}</td><td>${r.closed}</td>
+              <td>${r.first_response_human || '—'}</td>
+              <td>${r.resolution_human || '—'}</td>
+            </tr>`).join('')
+            : `<tr><td colspan="6" class="nil">No tickets in this range.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="dash-card" style="padding:16px;">
+      <div class="chart-head">
+        <p style="font-size:14px; font-weight:500; margin:0;">Volume and response time</p>
+        <span class="chart-legend">
+          <span><span style="display:inline-block; width:9px; height:9px; background:var(--brand-line); border-radius:2px; margin-right:5px;"></span>received</span>
+          <span><span style="display:inline-block; width:9px; height:2px; background:var(--warn); margin-right:5px; vertical-align:middle;"></span>1st response</span>
+        </span>
+      </div>
+      <div id="p-chart"></div>
+    </div>`;
+
+  el('p-back').addEventListener('click', renderStats_reset);
+  const tog = el('p-toggle');
+  if (tog) tog.addEventListener('click', () => {
+    state.showOverdue = !state.showOverdue;
+    renderPersonData();
+  });
+  wireRangeRow('p', renderPersonData);
+  renderMailboxPicker('p-mailboxes', d.mailbox_filter, (ids) => {
+    state.statsFilters = { ...state.statsFilters, mailbox_ids: ids };
+    renderPersonData();
+  });
+  drawTrend('p-chart', d.periods, d.overdue_hours);
+}
+
+function renderStats_reset() {
+  state.personId = null;
   renderStatsData();
 }
 
-async function renderStatsData() {
-  const params = new URLSearchParams();
-  Object.entries(state.statsFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
-  const data = await api(`/stats?${params.toString()}`);
-  const wrap = el('stats-wrap');
+// Hand-rolled SVG rather than Chart.js: two series on one plot with a
+// threshold line is less code this way than configuring a chart library,
+// and it inherits the theme variables directly.
+function drawTrend(containerId, periods, thresholdHours) {
+  const box = el(containerId);
+  if (!box) return;
+  if (!periods.length) { box.innerHTML = '<p class="chart-note">No data in this range.</p>'; return; }
 
-  const tatLine = (label, tat) => `
-    <div class="stat-row"><span>${escapeHtml(label)}</span><strong>${tat && tat.avg_human ? escapeHtml(tat.avg_human) : '—'}${tat && tat.sample_size ? ` <span class="small">(n=${tat.sample_size})</span>` : ''}</strong></div>
-  `;
+  const W = 620, H = 200, L = 42, R = 14, T = 18, B = 40;
+  const plotW = W - L - R, plotH = H - T - B;
+  const n = periods.length;
+  const step = plotW / n;
 
-  const cardHtml = (title, counts, tat) => `
-    <div class="card stat-card">
-      <h3>${escapeHtml(title)}</h3>
-      <div class="stat-row"><span>Unassigned</span><strong>${counts.unassigned}</strong></div>
-      <div class="stat-row"><span>Assigned</span><strong>${counts.assigned}</strong></div>
-      <div class="stat-row"><span>Replied</span><strong>${counts.replied}</strong></div>
-      <div class="stat-row"><span>Closed</span><strong>${counts.closed}</strong></div>
-      <div class="stat-row"><span>Total</span><strong>${counts.total}</strong></div>
-      ${tat ? `
-        <hr style="margin:8px 0; border:none; border-top:1px solid #e5e7eb;" />
-        ${tatLine('Avg. first response', tat.first_response)}
-        ${tatLine('Avg. resolution', tat.resolution)}
-      ` : ''}
-    </div>
-  `;
+  const maxVol = Math.max(...periods.map((p) => p.received), 1);
+  const frHours = periods.map((p) =>
+    p.first_response_avg_seconds == null ? null : p.first_response_avg_seconds / 3600);
+  const maxHrs = Math.max(thresholdHours * 1.15, ...frHours.filter((h) => h != null), 1);
 
-  wrap.innerHTML = `
-    <div class="info-banner">
-      Total tickets: ${data.total_tickets} &middot; Automated (excluded from stats below): ${data.automated_excluded_total}
-    </div>
-    <div class="card stat-card" style="max-width:420px; margin-bottom:16px;">
-      <h3>Team-wide TAT (turnaround time)</h3>
-      ${tatLine('Avg. first response', data.tat.first_response)}
-      ${tatLine('Avg. resolution', data.tat.resolution)}
-      <p class="small" style="margin-top:8px;">First response = time to first assignment or reply. Resolution = time to closed (or replied, if never explicitly closed). Automated tickets excluded from both.</p>
-    </div>
-    <div class="charts-grid">
-      <div class="card chart-card">
-        <h3>TAT by person</h3>
-        <canvas id="chart-tat-by-person" height="220"></canvas>
-      </div>
-      <div class="card chart-card">
-        <h3>TAT over time</h3>
-        <canvas id="chart-tat-trend" height="220"></canvas>
-      </div>
-    </div>
-    <div class="stats-grid">
-      ${cardHtml('Unassigned bucket', data.unassigned)}
-      ${data.per_assignee.map((p) => cardHtml(p.member.name, p.counts, p.tat)).join('')}
-    </div>
-    <h3 style="margin-top:24px;">Tickets per mailbox (non-automated)</h3>
-    <table>
-      <thead><tr><th>Mailbox</th><th>Unassigned</th><th>Assigned</th><th>Replied</th><th>Closed</th><th>Total</th></tr></thead>
-      <tbody>
-        ${data.per_mailbox.map((m) => `
-          <tr>
-            <td>${escapeHtml(m.email)}</td>
-            <td>${m.unassigned}</td>
-            <td>${m.assigned}</td>
-            <td>${m.replied}</td>
-            <td>${m.closed}</td>
-            <td><strong>${m.c}</strong></td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  `;
+  const barW = Math.min(step * 0.6, 34);
+  const cx = (i) => L + step * i + step / 2;
+  const volY = (v) => T + plotH - (v / maxVol) * plotH;
+  const hrY = (h) => T + plotH - (h / maxHrs) * plotH;
 
-  renderTatCharts(data);
+  const pts = frHours.map((h, i) => (h == null ? null : `${cx(i).toFixed(1)},${hrY(h).toFixed(1)}`))
+    .filter(Boolean).join(' ');
+
+  const labelEvery = Math.ceil(n / 6);
+
+  box.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:210px;" aria-hidden="true">
+      <line x1="${L}" y1="${T + plotH}" x2="${W - R}" y2="${T + plotH}" stroke="var(--line)" stroke-width="1"/>
+      <line x1="${L}" y1="${T + plotH / 2}" x2="${W - R}" y2="${T + plotH / 2}" stroke="var(--line-soft)" stroke-width="1"/>
+      <line x1="${L}" y1="${T}" x2="${W - R}" y2="${T}" stroke="var(--line-soft)" stroke-width="1"/>
+      <line x1="${L}" y1="${hrY(thresholdHours).toFixed(1)}" x2="${W - R}" y2="${hrY(thresholdHours).toFixed(1)}"
+            stroke="var(--alert)" stroke-width="1" stroke-dasharray="4 4"/>
+      <text x="${W - R - 2}" y="${(hrY(thresholdHours) - 4).toFixed(1)}" text-anchor="end"
+            font-size="10" fill="var(--alert)">${thresholdHours}h target</text>
+      ${periods.map((p, i) => `<rect x="${(cx(i) - barW / 2).toFixed(1)}" y="${volY(p.received).toFixed(1)}"
+            width="${barW.toFixed(1)}" height="${(T + plotH - volY(p.received)).toFixed(1)}"
+            fill="var(--brand-line)"/>`).join('')}
+      ${pts ? `<polyline points="${pts}" fill="none" stroke="var(--warn)" stroke-width="2"/>` : ''}
+      ${frHours.map((h, i) => (h == null ? '' :
+        `<circle cx="${cx(i).toFixed(1)}" cy="${hrY(h).toFixed(1)}" r="3" fill="var(--warn)"/>`)).join('')}
+      <text x="${L - 8}" y="${T + plotH + 4}" text-anchor="end" font-size="10" fill="var(--ink-faint)">0</text>
+      <text x="${L - 8}" y="${T + 10}" text-anchor="end" font-size="10" fill="var(--ink-faint)">${maxVol}</text>
+      ${periods.map((p, i) => (i % labelEvery === 0
+        ? `<text x="${cx(i).toFixed(1)}" y="${H - 16}" text-anchor="middle" font-size="10"
+             fill="var(--ink-faint)">${p.bucket.slice(5)}</text>` : '')).join('')}
+    </svg>
+    <p class="chart-note">Bars are tickets received; the line is average first response.
+      Response time rising while volume stays flat is not a load problem.</p>`;
 }
 
-// Destroy-and-recreate on every reload (simplest way to keep Chart.js in
-// sync with filter changes without tracking dirty state).
-let tatByPersonChart = null;
-let tatTrendChart = null;
+// Mailbox filter: a button showing "n of m", opening a dropdown of tick-boxes.
+// The server stays the source of truth for what's selected and what the viewer
+// is allowed to see - this only renders whatever /api/stats reported back.
+const pickerOpen = {};
 
-function renderTatCharts(data) {
-  if (typeof Chart === 'undefined') {
-    // CDN script (loaded in index.html) didn't load - surface this visibly
-    // instead of leaving two blank boxes with no explanation, so it's
-    // obvious to whoever's looking whether this is a real bug or just a
-    // blocked/offline CDN.
-    ['chart-tat-by-person', 'chart-tat-trend'].forEach((id) => {
-      const canvas = document.getElementById(id);
-      if (canvas) {
-        canvas.replaceWith(Object.assign(document.createElement('p'), {
-          className: 'small',
-          textContent: 'Charts unavailable - the Chart.js library failed to load (check your network/CDN access).',
-        }));
-      }
-    });
-    return;
-  }
+function closeAllPickers() {
+  Object.keys(pickerOpen).forEach((k) => {
+    pickerOpen[k] = false;
+    const p = document.getElementById(`${k}-pop`);
+    if (p) p.style.display = 'none';
+  });
+}
 
-  // Rounding to 1 decimal place made anything under ~3 minutes collapse to
-  // 0.0 (invisible bar) - 3 decimals keeps small/test-data TATs visible
-  // while still reading cleanly for real multi-hour TATs.
-  const hours = (seconds) => (seconds == null ? null : Math.round((seconds / 3600) * 1000) / 1000);
+function renderMailboxPicker(containerId, filter, onChange) {
+  const box = el(containerId);
+  if (!box || !filter || !filter.options || !filter.options.length) return;
+  const opts = filter.options;
+  const on = opts.filter((m) => m.selected).length;
 
-  // --- Chart 1: TAT by person (grouped bar, first response vs resolution) ---
-  const peopleLabels = data.per_assignee.map((p) => p.member.name);
-  const frByPerson = data.per_assignee.map((p) => hours(p.tat.first_response.avg_seconds));
-  const resByPerson = data.per_assignee.map((p) => hours(p.tat.resolution.avg_seconds));
+  box.innerHTML = `
+    <label>Mailboxes</label>
+    <div style="position:relative;">
+      <button type="button" class="filter-btn ${on < opts.length ? 'active' : ''}" id="${containerId}-btn">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">
+          <path d="M1.5 2.5h13l-5 6v5l-3-1.5v-3.5z" />
+        </svg>
+        ${on} of ${opts.length}
+      </button>
+      <div class="filter-pop" id="${containerId}-pop" style="display:none;">
+        <div class="quick"><a data-all="1">Select all</a><a data-none="1">Clear all</a></div>
+        ${opts.map((m) => `
+          <label class="opt">
+            <input type="checkbox" data-mailbox-id="${m.id}" ${m.selected ? 'checked' : ''} />
+            <span>${escapeHtml(m.email)}</span>
+          </label>`).join('')}
+      </div>
+    </div>`;
 
-  const byPersonCtx = document.getElementById('chart-tat-by-person');
-  if (tatByPersonChart) tatByPersonChart.destroy();
-  if (byPersonCtx && peopleLabels.length) {
-    tatByPersonChart = new Chart(byPersonCtx, {
-      type: 'bar',
-      data: {
-        labels: peopleLabels,
-        datasets: [
-          { label: 'Avg. first response (hrs)', data: frByPerson, backgroundColor: '#4f83cc' },
-          { label: 'Avg. resolution (hrs)', data: resByPerson, backgroundColor: '#7fb069' },
-        ],
-      },
-      options: {
-        responsive: true,
-        scales: { y: { beginAtZero: true, title: { display: true, text: 'Hours' } } },
-        plugins: { legend: { position: 'bottom' } },
-      },
-    });
-  } else if (byPersonCtx) {
-    byPersonCtx.replaceWith(Object.assign(document.createElement('p'), { className: 'small', textContent: 'No team members yet.' }));
-  }
+  const btn = el(`${containerId}-btn`);
+  const pop = el(`${containerId}-pop`);
+  // The whole picker is rebuilt on every reload, so the open/closed state has
+  // to be remembered here - otherwise the dropdown snaps shut the moment you
+  // tick a box, and you can't untick two things in a row.
+  if (pickerOpen[containerId]) pop.style.display = 'block';
 
-  // --- Chart 2: TAT over time (line, one point per day) ---
-  const trend = data.tat_trend || [];
-  const trendCtx = document.getElementById('chart-tat-trend');
-  if (tatTrendChart) tatTrendChart.destroy();
-  if (trendCtx && trend.length) {
-    tatTrendChart = new Chart(trendCtx, {
-      type: 'line',
-      data: {
-        labels: trend.map((t) => t.day),
-        datasets: [
-          {
-            label: 'Avg. first response (hrs)',
-            data: trend.map((t) => hours(t.first_response_avg_seconds)),
-            borderColor: '#4f83cc',
-            backgroundColor: '#4f83cc',
-            tension: 0.25,
-            spanGaps: true,
-          },
-          {
-            label: 'Avg. resolution (hrs)',
-            data: trend.map((t) => hours(t.resolution_avg_seconds)),
-            borderColor: '#7fb069',
-            backgroundColor: '#7fb069',
-            tension: 0.25,
-            spanGaps: true,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        scales: { y: { beginAtZero: true, title: { display: true, text: 'Hours' } } },
-        plugins: { legend: { position: 'bottom' } },
-      },
-    });
-  } else if (trendCtx) {
-    trendCtx.replaceWith(Object.assign(document.createElement('p'), { className: 'small', textContent: 'No ticket activity in this range yet.' }));
+  const current = () => Array.from(pop.querySelectorAll('input[data-mailbox-id]'))
+    .filter((x) => x.checked)
+    .map((x) => parseInt(x.dataset.mailboxId, 10));
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const wasOpen = pop.style.display !== 'none';
+    closeAllPickers();
+    pickerOpen[containerId] = !wasOpen;
+    pop.style.display = wasOpen ? 'none' : 'block';
+  });
+  pop.addEventListener('click', (e) => e.stopPropagation());
+  pop.querySelectorAll('input[data-mailbox-id]').forEach((cb) => {
+    cb.addEventListener('change', () => onChange(current()));
+  });
+  pop.querySelector('[data-all]').addEventListener('click', () => onChange(opts.map((m) => m.id)));
+  pop.querySelector('[data-none]').addEventListener('click', () => onChange([]));
+
+  if (!renderMailboxPicker._wired) {
+    renderMailboxPicker._wired = true;
+    document.addEventListener('click', closeAllPickers);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllPickers(); });
   }
 }
 
@@ -1520,4 +2297,5 @@ function openEditMember(id) {
   });
 }
 
+initTheme();
 boot();

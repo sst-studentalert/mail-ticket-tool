@@ -9,7 +9,389 @@ const { recordMessage } = require('../services/poller');
 const router = express.Router();
 router.use(requireAuth);
 
+// Merge relationships are stored separately so original ticket rows, status,
+// SLA timestamps, mailbox and message history are never deleted or rewritten.
+const mergeTableReady = db.prepare(`
+  CREATE TABLE IF NOT EXISTS ticket_merges (
+    secondary_ticket_id INTEGER PRIMARY KEY,
+    primary_ticket_id INTEGER NOT NULL,
+    merged_by INTEGER,
+    merged_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`).run();
+
 const PROVIDERS = { gmail: gmailAdapter };
+
+
+const FIRST_REPLY_TARGET_H = 24;
+const RESOLUTION_TARGET_H = 72;
+
+
+// ---------------------------------------------------------------------------
+// Live learner/contact mapping from Google Sheets
+// ---------------------------------------------------------------------------
+// IMPORTANT: EMAIL IS THE LOOKUP KEY.
+//
+// ALL learner information is read from the Consolidated tab (gid 0).
+// The tab may contain repeated/side-by-side student-data blocks. Each block
+// is parsed independently so name, Student ID and parent/guardian fields
+// always come from the same block as the learner email.
+//
+// We NEVER use Student ID to find a ticket. A ticket is matched by sender email.
+const LEARNER_SHEET_ID =
+  process.env.LEARNER_SHEET_ID || '19mFOOpN1wqDoWMazVeQ5ni28mU2i9cICUvBPrzE7kRM';
+const LEARNER_SHEET_GID = process.env.LEARNER_SHEET_GID || '0';
+const LEARNER_SHEET_CACHE_MS = 5 * 60 * 1000;
+
+let learnerSheetCache = {
+  loadedAt: 0,
+  mapping: {},
+};
+
+function parseCsvRecords(text) {
+  const records = [];
+  const source = String(text || '').replace(/^\uFEFF/, '');
+  let row = [];
+  let cell = '';
+  let quoted = false;
+
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+
+    if (ch === '"') {
+      if (quoted && source[i + 1] === '"') {
+        cell += '"';
+        i += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+
+    if (ch === ',' && !quoted) {
+      row.push(cell.trim());
+      cell = '';
+      continue;
+    }
+
+    if ((ch === '\n' || ch === '\r') && !quoted) {
+      if (ch === '\r' && source[i + 1] === '\n') i += 1;
+      row.push(cell.trim());
+      cell = '';
+      if (row.some((value) => String(value).trim() !== '')) records.push(row);
+      row = [];
+      continue;
+    }
+
+    cell += ch;
+  }
+
+  if (cell !== '' || row.length) {
+    row.push(cell.trim());
+    if (row.some((value) => String(value).trim() !== '')) records.push(row);
+  }
+
+  return records;
+}
+
+function normalizeSheetHeader(value) {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function findHeaderIndex(headers, patterns, start = 0, end = headers.length) {
+  return headers.findIndex((h, i) =>
+    i >= start && i < end && patterns.some((p) => h === p || h.includes(p))
+  );
+}
+
+function findHeaderIndexes(headers, patterns) {
+  const normalizedPatterns = patterns.map((p) => String(p).toLowerCase());
+  return headers.reduce((out, h, i) => {
+    if (normalizedPatterns.some((p) => h === p || h.includes(p))) out.push(i);
+    return out;
+  }, []);
+}
+
+function firstNonEmptyCell(cells, indexes) {
+  for (const index of indexes || []) {
+    const value = String(cells[index] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function csvRows(text) {
+  const records = parseCsvRecords(text);
+  if (!records.length) return { headers: [], rows: [] };
+  const headers = records[0].map(normalizeSheetHeader);
+  return { headers, rows: records.slice(1) };
+}
+
+function makeEmptyLearnerRecord(email, name = '') {
+  return {
+    learner_email: email,
+    name: name || email,
+    student_id: null,
+    status: null,
+    contacts: [{ email, relationship: 'Learner', name: name || email }],
+    contact_emails: [email],
+  };
+}
+
+function addLearnerContact(record, email, relationship, name) {
+  const normalized = normalizeLearnerEmail(email);
+  if (!normalized) return;
+  const existing = record.contacts.find((c) => c.email === normalized);
+  if (existing) {
+    if ((!existing.name || existing.name === existing.relationship) && name) existing.name = String(name).trim();
+    return;
+  }
+  record.contacts.push({
+    email: normalized,
+    relationship,
+    name: String(name || relationship).trim(),
+  });
+  if (!record.contact_emails.includes(normalized)) record.contact_emails.push(normalized);
+}
+
+function parseConsolidated(text) {
+  const { headers, rows } = csvRows(text);
+  if (!headers.length) return {};
+
+  const emailIndexes = findHeaderIndexes(headers, ['email address', 'sst email']);
+  if (!emailIndexes.length) {
+    throw new Error('Consolidated sheet must contain an Email Address or SST Email column.');
+  }
+
+  // The Consolidated sheet is allowed to contain several complete student-data
+  // blocks side-by-side. Each block starts with Email Address. Fields must be
+  // read from the SAME block as that email; otherwise parent details/student ID
+  // from another block can accidentally be attached to the wrong learner.
+  const blockStarts = [...emailIndexes].sort((a, b) => a - b);
+  const mapping = {};
+
+  for (const cells of rows) {
+    for (let b = 0; b < blockStarts.length; b += 1) {
+      const start = blockStarts[b];
+      const end = b + 1 < blockStarts.length ? blockStarts[b + 1] : headers.length;
+
+      const emailIndex = findHeaderIndex(headers, ['email address', 'sst email'], start, end);
+      if (emailIndex < 0) continue;
+
+      const email = normalizeLearnerEmail(cells[emailIndex] || '');
+      if (!email) continue;
+
+      const nameIndex = findHeaderIndex(headers, ['full name (as per aadhar)', 'student name', 'name'], start, end);
+      const studentIdIndex = findHeaderIndex(headers, ['student id', 'student. id', 'student  id'], start, end);
+      const fatherNameIndex = findHeaderIndex(headers, ["father's name", 'father name'], start, end);
+      const fatherEmailIndex = findHeaderIndex(headers, ["father's email id", 'father email'], start, end);
+      const motherNameIndex = findHeaderIndex(headers, ["mother's name", 'mother name'], start, end);
+      const motherEmailIndex = findHeaderIndex(headers, ["mother's email id", 'mother email'], start, end);
+      const guardianNameIndex = findHeaderIndex(headers, ["local guardian's name", 'guardian name'], start, end);
+      const guardianEmailIndex = findHeaderIndex(headers, ["local guardian's email id", 'local guardian email', 'guardian email'], start, end);
+
+      const name = nameIndex >= 0 ? String(cells[nameIndex] || '').trim() : '';
+      if (!mapping[email]) mapping[email] = makeEmptyLearnerRecord(email, name || email);
+      const record = mapping[email];
+
+      if (name && (!record.name || record.name === record.learner_email)) record.name = name;
+
+      const studentId = studentIdIndex >= 0 ? String(cells[studentIdIndex] || '').trim() : '';
+      if (studentId && !record.student_id) record.student_id = studentId;
+
+      const fatherName = fatherNameIndex >= 0 ? String(cells[fatherNameIndex] || '').trim() : '';
+      const fatherEmail = fatherEmailIndex >= 0 ? cells[fatherEmailIndex] : '';
+      addLearnerContact(record, fatherEmail, 'Father', fatherName);
+
+      const motherName = motherNameIndex >= 0 ? String(cells[motherNameIndex] || '').trim() : '';
+      const motherEmail = motherEmailIndex >= 0 ? cells[motherEmailIndex] : '';
+      addLearnerContact(record, motherEmail, 'Mother', motherName);
+
+      const guardianName = guardianNameIndex >= 0 ? String(cells[guardianNameIndex] || '').trim() : '';
+      const guardianEmail = guardianEmailIndex >= 0 ? cells[guardianEmailIndex] : '';
+      addLearnerContact(record, guardianEmail, 'Guardian', guardianName);
+    }
+  }
+
+  // Backward compatibility for a simple Name | SST Email sheet where the
+  // name column occurs before the email column and therefore sits outside the
+  // email block above.
+  if (!Object.keys(mapping).length) {
+    const nameIndex = findHeaderIndex(headers, ['name']);
+    const emailIndex = findHeaderIndex(headers, ['sst email', 'email address']);
+    if (emailIndex >= 0) {
+      for (const cells of rows) {
+        const email = normalizeLearnerEmail(cells[emailIndex] || '');
+        if (!email) continue;
+        const name = nameIndex >= 0 ? String(cells[nameIndex] || '').trim() : '';
+        mapping[email] = makeEmptyLearnerRecord(email, name || email);
+      }
+    }
+  }
+
+  return mapping;
+}
+
+function buildContactLookup(mapping) {
+  const lookup = {};
+  for (const record of Object.values(mapping)) {
+    for (const contact of record.contacts || []) {
+      if (!lookup[contact.email]) {
+        lookup[contact.email] = {
+          ...record,
+          relationship: contact.relationship,
+          sender_name: contact.name,
+          contacts: record.contacts,
+          contact_emails: record.contact_emails,
+        };
+      }
+    }
+  }
+  return lookup;
+}
+
+async function fetchGoogleSheetCsvByGid(gid) {
+  const url =
+    `https://docs.google.com/spreadsheets/d/${encodeURIComponent(LEARNER_SHEET_ID)}` +
+    `/gviz/tq?tqx=out:csv&gid=${encodeURIComponent(gid)}`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Google Sheet returned HTTP ${response.status}`);
+    return response.text();
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error('Google Sheet request timed out after 8 seconds.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function loadLearnerMapping() {
+  const now = Date.now();
+  if (learnerSheetCache.loadedAt && now - learnerSheetCache.loadedAt < LEARNER_SHEET_CACHE_MS) {
+    return learnerSheetCache.mapping;
+  }
+
+  try {
+    const consolidatedText = await fetchGoogleSheetCsvByGid(LEARNER_SHEET_GID);
+    if (/accounts\.google\.com|sign in to continue|request access|permission denied/i.test(consolidatedText)) {
+      throw new Error('Google Sheet is not publicly readable. Share the sheet as Anyone with the link → Viewer.');
+    }
+
+    const mapping = parseConsolidated(consolidatedText);
+    if (!Object.keys(mapping).length) throw new Error('No learner rows were found in Consolidated.');
+
+    const contactLookup = buildContactLookup(mapping);
+    learnerSheetCache = { loadedAt: now, mapping: contactLookup };
+    console.log(`Loaded ${Object.keys(mapping).length} learner records from Consolidated using block-safe mapping.`);
+    return contactLookup;
+  } catch (err) {
+    console.error('Learner Google Sheet lookup failed:', err);
+    return learnerSheetCache.mapping || {};
+  }
+}
+
+function normalizeLearnerEmail(value) {
+  if (!value) return '';
+  const m = /<([^>]+)>/.exec(String(value));
+  let email = (m ? m[1] : String(value)).trim().toLowerCase().replace(/\s+/g, '');
+  const at = email.indexOf('@');
+  if (at > 0 && email.slice(at + 1).startsWith('ms.')) {
+    email = email.slice(0, at + 1) + email.slice(at + 4);
+  }
+  return email;
+}
+
+function learnerRecord(mapping, value) {
+  return mapping[normalizeLearnerEmail(value)] || null;
+}
+
+async function getVisibility(req, alias = 't') {
+  const clauses = [];
+  const params = [];
+
+  if (!req.user.is_admin) {
+    const fullAccessMailboxIds = await getFullAccessMailboxIds(req.user.id);
+    if (fullAccessMailboxIds.length) {
+      clauses.push(`(${alias}.assignee_id = ? OR ${alias}.mailbox_id = ANY(?))`);
+      params.push(req.user.id, fullAccessMailboxIds);
+    } else {
+      clauses.push(`${alias}.assignee_id = ?`);
+      params.push(req.user.id);
+    }
+  }
+
+  const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
+  if (accessibleMailboxIds !== null) {
+    if (accessibleMailboxIds.length === 0) {
+      clauses.push('1 = 0');
+    } else {
+      clauses.push(`${alias}.mailbox_id = ANY(?)`);
+      params.push(accessibleMailboxIds);
+    }
+  }
+
+  return {
+    sql: clauses.length ? `AND ${clauses.join(' AND ')}` : '',
+    params,
+  };
+}
+
+function learnerIdentity(record) {
+  if (!record) return '';
+  return record.student_id || record.learner_email || '';
+}
+
+function buildLearnerCounts(rows, mapping) {
+  const counts = new Map();
+  for (const row of rows) {
+    const sender = normalizeLearnerEmail(row.from_address);
+    const record = mapping[sender] || null;
+    const key = learnerIdentity(record) || sender;
+    if (!key) continue;
+    const current = counts.get(key) || { total: 0, open: 0, closed: 0, unassigned: 0, assigned: 0, replied: 0 };
+    current.total += 1;
+    if (row.status === 'closed') current.closed += 1;
+    else current.open += 1;
+    if (row.status === 'unassigned') current.unassigned += 1;
+    else if (row.status === 'assigned') current.assigned += 1;
+    else if (row.status === 'replied') current.replied += 1;
+    counts.set(key, current);
+  }
+  return counts;
+}
+
+function learnerSla(tickets) {
+  const eligible = tickets.filter((t) => t.first_received_at);
+  let met = 0;
+  const now = Date.now();
+  for (const t of eligible) {
+    const received = new Date(t.first_received_at).getTime();
+    const firstReply = t.first_replied_at ? new Date(t.first_replied_at).getTime() : null;
+    const resolution = t.closed_at ? new Date(t.closed_at).getTime() : (t.first_replied_at ? new Date(t.first_replied_at).getTime() : null);
+    const firstOk = firstReply != null ? firstReply - received <= FIRST_REPLY_TARGET_H * 3600000 : now - received <= FIRST_REPLY_TARGET_H * 3600000;
+    const resolutionOk = resolution != null ? resolution - received <= RESOLUTION_TARGET_H * 3600000 : now - received <= RESOLUTION_TARGET_H * 3600000;
+    if (firstOk && resolutionOk) met += 1;
+  }
+  return {
+    met,
+    total: eligible.length,
+    missed: eligible.length - met,
+    percent: eligible.length ? Math.round((met / eligible.length) * 100) : null,
+    first_response_target_hours: FIRST_REPLY_TARGET_H,
+    resolution_target_hours: RESOLUTION_TARGET_H,
+  };
+}
 
 async function logEvent(ticketId, actorId, eventType, detail) {
   await db
@@ -69,7 +451,8 @@ async function requireTicketAccess(req, res, ticket) {
 // assigned tickets regardless of what filters they pass in.
 router.get('/', async (req, res, next) => {
   try {
-    const { mailbox_id, assignee_id, status, automated, tag, q, from_date, to_date } = req.query;
+    await mergeTableReady;
+    const { mailbox_id, assignee_id, status, automated, tag, q, learner, from_date, to_date } = req.query;
 
     const clauses = [];
     const params = [];
@@ -149,20 +532,237 @@ router.get('/', async (req, res, next) => {
       params.push(like, like, like, like);
     }
 
+    // Learner filter searches the live Google Sheet mapping by learner name
+    // or SST email, then limits tickets to the matching learner emails.
+    // This is intentionally separate from the general ticket search so that
+    // searching a learner name works even when that name is not stored in the
+    // tickets table itself.
+    if (learner) {
+      const learnerMapping = await loadLearnerMapping();
+      const needle = String(learner).trim().toLowerCase();
+      const matchingEmails = [...new Set(Object.entries(learnerMapping)
+        .filter(([email, record]) =>
+          email.includes(needle) ||
+          String(record.name || '').toLowerCase().includes(needle) ||
+          String(record.student_id || '').toLowerCase().includes(needle)
+        )
+        .flatMap(([email, record]) => record.contact_emails || [email]))];
+
+      if (!matchingEmails.length) {
+        clauses.push('1 = 0');
+      } else {
+        const learnerClauses = [];
+        for (const email of matchingEmails) {
+          learnerClauses.push('(LOWER(TRIM(t.from_address)) = ? OR LOWER(TRIM(t.from_address)) LIKE ?)');
+          params.push(email, `%<${email}>%`);
+        }
+        clauses.push(`(${learnerClauses.join(' OR ')})`);
+      }
+    }
+
+    if (req.query.relationship) {
+      const learnerMapping = await loadLearnerMapping();
+      const relationship = String(req.query.relationship).trim().toLowerCase();
+      const matchingEmails = Object.entries(learnerMapping)
+        .filter(([, record]) => String(record.relationship || '').toLowerCase() === relationship)
+        .map(([email]) => email);
+      if (!matchingEmails.length) {
+        clauses.push('1 = 0');
+      } else {
+        const relationshipClauses = matchingEmails.map(() => '(LOWER(TRIM(t.from_address)) = ? OR LOWER(TRIM(t.from_address)) LIKE ?)');
+        for (const email of matchingEmails) params.push(email, `%<${email}>%`);
+        clauses.push(`(${relationshipClauses.join(' OR ')})`);
+      }
+    }
+
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = await db
       .prepare(
-        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name
+        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name, mg.primary_ticket_id AS merged_into_ticket_id
          FROM tickets t
          LEFT JOIN mailboxes m ON m.id = t.mailbox_id
          LEFT JOIN team_members tm ON tm.id = t.assignee_id
+         LEFT JOIN ticket_merges mg ON mg.secondary_ticket_id = t.id
          ${where}
          ORDER BY t.received_at DESC
          LIMIT 500`
       )
       .all(...params);
 
-    res.json({ tickets: rows.map(serializeTicket) });
+    const visibility = await getVisibility(req, 't');
+    const learnerRows = await db
+      .prepare(`SELECT t.from_address, t.status FROM tickets t WHERE t.is_automated = 0 ${visibility.sql}`)
+      .all(...visibility.params);
+    const learnerMapping = await loadLearnerMapping();
+    const learnerCounts = buildLearnerCounts(learnerRows, learnerMapping);
+
+    res.json({
+      tickets: rows.map((row) => {
+        const ticket = serializeTicket(row);
+        const key = normalizeLearnerEmail(row.from_address);
+        const mapping = learnerRecord(learnerMapping, row.from_address);
+        const identity = learnerIdentity(mapping) || key;
+        const counts = learnerCounts.get(identity) || { total: 0, open: 0, closed: 0, unassigned: 0, assigned: 0, replied: 0 };
+        return {
+          ...ticket,
+          student_id: mapping ? mapping.student_id : null,
+          learner_name: mapping ? mapping.name : null,
+          learner_email: mapping ? mapping.learner_email : key || null,
+          sender_relationship: mapping ? (mapping.relationship || 'Learner') : null,
+          sender_name: mapping ? mapping.sender_name : null,
+          learner_ticket_count: counts.total,
+          learner_open_count: counts.open,
+          merged_into_ticket_id: row.merged_into_ticket_id || null,
+          is_merged: !!row.merged_into_ticket_id,
+        };
+      }),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/tickets/learner/:email - learner history and cross-mailbox summary
+router.get('/learner/:email', async (req, res, next) => {
+  try {
+    await mergeTableReady;
+    const requestedEmail = decodeURIComponent(req.params.email || '');
+    const normalizedEmail = normalizeLearnerEmail(requestedEmail);
+    if (!normalizedEmail) return res.status(400).json({ error: 'Learner email is required' });
+
+    const learnerMapping = await loadLearnerMapping();
+    const mapping = learnerMapping[normalizedEmail] || null;
+    const learnerEmails = mapping ? (mapping.contact_emails || [mapping.learner_email]) : [normalizedEmail];
+
+    const visibility = await getVisibility(req, 't');
+    const senderClauses = learnerEmails.map(() => '(LOWER(TRIM(t.from_address)) = ? OR LOWER(TRIM(t.from_address)) LIKE ?)').join(' OR ');
+    const senderParams = learnerEmails.flatMap((email) => [email, `%<${email}>%`]);
+    const rows = await db
+      .prepare(
+        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name, mg.primary_ticket_id AS merged_into_ticket_id
+         FROM tickets t
+         LEFT JOIN mailboxes m ON m.id = t.mailbox_id
+         LEFT JOIN team_members tm ON tm.id = t.assignee_id
+         LEFT JOIN ticket_merges mg ON mg.secondary_ticket_id = t.id
+         WHERE t.is_automated = 0
+           AND (${senderClauses})
+           ${visibility.sql}
+         ORDER BY t.first_received_at DESC, t.received_at DESC`
+      )
+      .all(...senderParams, ...visibility.params);
+
+    const tickets = rows.map((row) => ({
+      ...serializeTicket(row),
+      learner_email: mapping ? mapping.learner_email : normalizedEmail,
+      student_id: mapping ? mapping.student_id : null,
+      learner_name: mapping ? mapping.name : null,
+      sender_relationship: mapping ? ((mapping.contacts || []).find((c) => c.email === normalizeLearnerEmail(row.from_address))?.relationship || 'Learner') : 'Learner',
+      sender_name: mapping ? ((mapping.contacts || []).find((c) => c.email === normalizeLearnerEmail(row.from_address))?.name || mapping.name) : null,
+    }));
+    const byStatus = { unassigned: 0, assigned: 0, replied: 0, closed: 0 };
+    const byMailbox = new Map();
+    for (const t of tickets) {
+      // A merged secondary remains part of the learner's total history, but
+      // it is not counted again in the active status buckets.
+      if (!t.merged_into_ticket_id && Object.prototype.hasOwnProperty.call(byStatus, t.status)) byStatus[t.status] += 1;
+      const mailbox = t.mailbox_email || 'Unknown';
+      byMailbox.set(mailbox, (byMailbox.get(mailbox) || 0) + 1);
+    }
+
+    const total = tickets.length;
+    const merged = rows.filter((t) => t.merged_into_ticket_id).length;
+    const closed = byStatus.closed;
+    const open = Math.max(0, total - closed - merged);
+    const sla = learnerSla(rows);
+
+    res.json({
+      learner: {
+        email: mapping ? mapping.learner_email : (requestedEmail || normalizedEmail),
+        student_id: mapping ? mapping.student_id : null,
+        name: mapping ? mapping.name : null,
+        status: mapping ? mapping.status : null,
+        contacts: mapping ? mapping.contacts : [],
+        father_name: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase() === 'father') || {}).name || null : null,
+        father_email: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase() === 'father') || {}).email || null : null,
+        mother_name: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase() === 'mother') || {}).name || null : null,
+        mother_email: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase() === 'mother') || {}).email || null : null,
+        guardian_name: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase().includes('guardian')) || {}).name || null : null,
+        guardian_email: mapping ? ((mapping.contacts || []).find((c) => String(c.relationship || '').toLowerCase().includes('guardian')) || {}).email || null : null,
+      },
+      counts: {
+        total,
+        open,
+        closed,
+        unassigned: byStatus.unassigned,
+        first_response_pending: byStatus.assigned,
+        replied: byStatus.replied,
+        merged,
+      },
+      sla,
+      by_status: byStatus,
+      by_mailbox: [...byMailbox.entries()].map(([mailbox, count]) => ({ mailbox, count })),
+      tickets,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/tickets/learner/:email/merge - merge two or more tickets for one learner.
+// Admin-only. The primary ticket remains the working ticket; secondary tickets
+// are linked to it and remain intact for audit/SLA/history purposes.
+router.post('/learner/:email/merge', async (req, res, next) => {
+  try {
+    await mergeTableReady;
+    if (!req.user.is_admin) return res.status(403).json({ error: 'Only admins can merge tickets' });
+
+    const requestedEmail = decodeURIComponent(req.params.email || '');
+    const normalizedEmail = normalizeLearnerEmail(requestedEmail);
+    const ids = [...new Set((Array.isArray(req.body && req.body.ticket_ids) ? req.body.ticket_ids : []).map(Number).filter(Number.isInteger))];
+    const primaryId = Number(req.body && req.body.primary_ticket_id);
+
+    if (!normalizedEmail) return res.status(400).json({ error: 'Learner email is required' });
+    if (ids.length < 2) return res.status(400).json({ error: 'Select at least two tickets to merge' });
+    if (!ids.includes(primaryId)) return res.status(400).json({ error: 'Primary ticket must be one of the selected tickets' });
+
+    const visibility = await getVisibility(req, 't');
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.prepare(
+      `SELECT t.*, mg.primary_ticket_id AS merged_into_ticket_id
+       FROM tickets t
+       LEFT JOIN ticket_merges mg ON mg.secondary_ticket_id = t.id
+       WHERE t.id IN (${placeholders}) AND t.is_automated = 0 ${visibility.sql}`
+    ).all(...ids, ...visibility.params);
+
+    if (rows.length !== ids.length) return res.status(403).json({ error: 'One or more selected tickets are not accessible' });
+    const mergeMapping = await loadLearnerMapping();
+    const requestedRecord = mergeMapping[normalizedEmail] || null;
+    const requestedIdentity = learnerIdentity(requestedRecord) || normalizedEmail;
+    if (rows.some((t) => {
+      const record = mergeMapping[normalizeLearnerEmail(t.from_address)] || null;
+      return (learnerIdentity(record) || normalizeLearnerEmail(t.from_address)) !== requestedIdentity;
+    })) {
+      return res.status(400).json({ error: 'All selected tickets must belong to the same learner' });
+    }
+    if (rows.some((t) => t.merged_into_ticket_id)) {
+      return res.status(400).json({ error: 'One or more selected tickets is already merged into another ticket' });
+    }
+
+    const secondaryRows = rows.filter((t) => Number(t.id) !== primaryId);
+    for (const secondary of secondaryRows) {
+      await db.prepare(
+        `INSERT INTO ticket_merges (secondary_ticket_id, primary_ticket_id, merged_by, merged_at)
+         VALUES (?, ?, ?, datetime('now'))`
+      ).run(secondary.id, primaryId, req.user.id);
+      await logEvent(secondary.id, req.user.id, 'ticket_merged', `Merged into ticket #${primaryId}`);
+      await logEvent(primaryId, req.user.id, 'ticket_merge_added', `Merged ticket #${secondary.id}`);
+    }
+
+    res.json({
+      primary_ticket_id: primaryId,
+      merged_ticket_ids: secondaryRows.map((t) => t.id),
+      message: `Merged ${ids.length} tickets into ticket #${primaryId}`,
+    });
   } catch (err) {
     next(err);
   }
@@ -194,11 +794,43 @@ router.get('/:id', async (req, res, next) => {
       .prepare(`SELECT * FROM ticket_messages WHERE ticket_id = ? ORDER BY sent_at`)
       .all(ticket.id);
 
+    await mergeTableReady;
+    const mergeInfo = await db.prepare(
+      `SELECT mg.primary_ticket_id, mg.secondary_ticket_id, mg.merged_at, tm.name AS merged_by_name
+       FROM ticket_merges mg
+       LEFT JOIN team_members tm ON tm.id = mg.merged_by
+       WHERE mg.primary_ticket_id = ? OR mg.secondary_ticket_id = ?
+       ORDER BY mg.merged_at`
+    ).all(ticket.id, ticket.id);
+
+    const mergedChildren = mergeInfo
+      .filter((m) => Number(m.primary_ticket_id) === Number(ticket.id))
+      .map((m) => Number(m.secondary_ticket_id));
+
+    let mergedTickets = [];
+    let mergedMessages = [];
+    if (mergedChildren.length) {
+      const ph = mergedChildren.map(() => '?').join(',');
+      mergedTickets = await db.prepare(
+        `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name
+         FROM tickets t
+         LEFT JOIN mailboxes m ON m.id = t.mailbox_id
+         LEFT JOIN team_members tm ON tm.id = t.assignee_id
+         WHERE t.id IN (${ph}) ORDER BY t.first_received_at, t.received_at`
+      ).all(...mergedChildren);
+      mergedMessages = await db.prepare(
+        `SELECT * FROM ticket_messages WHERE ticket_id IN (${ph}) ORDER BY sent_at`
+      ).all(...mergedChildren);
+    }
+
     res.json({
       ticket: serializeTicket(ticket),
       mailbox_email: mailbox ? mailbox.email : null,
       events,
       messages,
+      merge_info: mergeInfo,
+      merged_tickets: mergedTickets.map(serializeTicket),
+      merged_messages: mergedMessages,
     });
   } catch (err) {
     next(err);

@@ -22,26 +22,45 @@ const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 const requireAdmin = require('../middleware/requireAdmin');
 const { fmtDuration } = require('../services/tat');
-const { getAccessibleMailboxIds } = require('../services/mailboxAccess');
+const { resolveMailboxScope } = require('../services/mailboxScope');
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
 
 const STATUSES = ['unassigned', 'assigned', 'replied', 'closed'];
 
-// "First response" = earliest of assigned_at / first_replied_at. Postgres
-// has no scalar multi-arg MIN() like SQLite does - LEAST() is the
-// Postgres equivalent for "smaller of these two values" (as opposed to
-// MIN(), which in Postgres is only an aggregate over rows).
-const FIRST_RESPONSE_EXPR = `(
-  CASE
-    WHEN assigned_at IS NOT NULL AND first_replied_at IS NOT NULL
-      THEN LEAST(assigned_at, first_replied_at)
-    ELSE COALESCE(assigned_at, first_replied_at)
-  END
-)`;
+// "First response" = the first actual outbound reply. Assignment is NOT a
+// response, so assigned_at must not be used for FRT.
+const FIRST_RESPONSE_EXPR = `first_replied_at`;
 // "Resolution" = closed_at if present, else first_replied_at.
 const RESOLUTION_EXPR = `COALESCE(closed_at, first_replied_at)`;
+
+// SLA targets, in wall-clock hours. A ticket is SLA-compliant only when both
+// first-response and resolution are within their respective targets. If a
+// milestone has not happened yet, it is considered compliant only while its
+// deadline has not passed; once the deadline passes, it becomes an SLA miss.
+const FIRST_REPLY_TARGET_H = 24;
+const RESOLUTION_TARGET_H = 72;
+
+function slaPassExpr() {
+  return `
+    (
+      (
+        (first_replied_at IS NOT NULL AND EXTRACT(EPOCH FROM (first_replied_at - first_received_at)) <= ${FIRST_REPLY_TARGET_H * 3600})
+        OR
+        (first_replied_at IS NULL AND CURRENT_TIMESTAMP <= first_received_at + INTERVAL '${FIRST_REPLY_TARGET_H} hours')
+      )
+      AND
+      (
+        (COALESCE(closed_at, first_replied_at) IS NOT NULL
+          AND EXTRACT(EPOCH FROM (COALESCE(closed_at, first_replied_at) - first_received_at)) <= ${RESOLUTION_TARGET_H * 3600})
+        OR
+        (COALESCE(closed_at, first_replied_at) IS NULL
+          AND CURRENT_TIMESTAMP <= first_received_at + INTERVAL '${RESOLUTION_TARGET_H} hours')
+      )
+    )`;
+}
+
 
 router.get('/', async (req, res, next) => {
   try {
@@ -61,21 +80,32 @@ router.get('/', async (req, res, next) => {
     }
     const dateSql = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : '';
 
-    // Mailbox access allow-list - a separate, additional restriction from
-    // is_admin (see services/mailboxAccess.js). Admins are still scoped to
-    // their granted mailboxes here, same as in the Tickets list, so the
-    // Dashboard never shows numbers from a mailbox they can't see tickets
-    // from. null (the default, unrestricted) means no extra clause.
-    const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
-    let mailboxSql = '';
-    let mailboxParams = [];
-    if (accessibleMailboxIds !== null) {
-      if (accessibleMailboxIds.length === 0) {
-        mailboxSql = 'AND 1 = 0';
-      } else {
-        mailboxSql = 'AND mailbox_id = ANY(?)';
-        mailboxParams = [accessibleMailboxIds];
-      }
+    // Which mailboxes this Dashboard covers: the viewer's mailbox_access
+    // allow-list, intersected with whatever they've ticked in the filter bar
+    // (?mailboxIds=). See services/mailboxScope.js.
+    const scope = await resolveMailboxScope(req.user.id, req.query.mailboxIds);
+    const mailboxSql = scope.sql;
+    const mailboxParams = scope.params;
+
+    async function slaFor(extraWhere, extraParams) {
+      const passExpr = slaPassExpr();
+      const row = await db
+        .prepare(
+          `SELECT COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE ${passExpr}) AS met
+           FROM tickets
+           WHERE is_automated = 0 AND first_received_at IS NOT NULL
+             ${dateSql} ${mailboxSql} ${extraWhere}`
+        )
+        .get(...dateParams, ...mailboxParams, ...extraParams);
+      const total = Number(row.total || 0);
+      const met = Number(row.met || 0);
+      return {
+        met,
+        total,
+        missed: total - met,
+        percent: total ? Math.round((met / total) * 100) : null,
+      };
     }
 
     // Computes { avg_seconds, avg_human, sample_size } for a TAT metric over
@@ -112,8 +142,13 @@ router.get('/', async (req, res, next) => {
 
     const members = await db.prepare('SELECT id, name, email FROM team_members ORDER BY name').all();
 
+    // Include current team members first.
     const perAssignee = [];
+    const knownAssigneeIds = new Set();
+
     for (const member of members) {
+      knownAssigneeIds.add(String(member.id));
+
       const counts = {};
       for (const status of STATUSES) {
         counts[status] = await countFor('AND assignee_id = ? AND status = ?', [member.id, status]);
@@ -122,8 +157,52 @@ router.get('/', async (req, res, next) => {
 
       const firstResponseTat = await tatFor(FIRST_RESPONSE_EXPR, 'AND assignee_id = ?', [member.id]);
       const resolutionTat = await tatFor(RESOLUTION_EXPR, 'AND assignee_id = ?', [member.id]);
+      const sla = await slaFor('AND assignee_id = ?', [member.id]);
 
-      perAssignee.push({ member, counts, tat: { first_response: firstResponseTat, resolution: resolutionTat } });
+      perAssignee.push({ member, counts, tat: { first_response: firstResponseTat, resolution: resolutionTat }, sla });
+    }
+
+    // Some historical tickets can still contain an assignee_id whose team
+    // member has since been removed. Those tickets are still real workload,
+    // so do not let them disappear from the Dashboard totals. Add one clearly
+    // labelled "Former / unknown assignee" row for those records.
+    const orphanAssignees = await db
+      .prepare(
+        `SELECT DISTINCT assignee_id
+         FROM tickets
+         WHERE assignee_id IS NOT NULL
+           AND is_automated = 0
+           ${dateSql} ${mailboxSql}`
+      )
+      .all(...dateParams, ...mailboxParams);
+
+    for (const row of orphanAssignees) {
+      const assigneeId = String(row.assignee_id);
+      if (knownAssigneeIds.has(assigneeId)) continue;
+
+      const counts = {};
+      for (const status of STATUSES) {
+        counts[status] = await countFor('AND assignee_id = ? AND status = ?', [row.assignee_id, status]);
+      }
+      counts.total = STATUSES.reduce((sum, s) => sum + counts[s], 0);
+
+      if (counts.total === 0) continue;
+
+      const firstResponseTat = await tatFor(FIRST_RESPONSE_EXPR, 'AND assignee_id = ?', [row.assignee_id]);
+      const resolutionTat = await tatFor(RESOLUTION_EXPR, 'AND assignee_id = ?', [row.assignee_id]);
+      const sla = await slaFor('AND assignee_id = ?', [row.assignee_id]);
+
+      perAssignee.push({
+        member: {
+          id: row.assignee_id,
+          name: 'Former / unknown assignee',
+          email: '',
+          historical: true,
+        },
+        counts,
+        tat: { first_response: firstResponseTat, resolution: resolutionTat },
+        sla,
+      });
     }
 
     const unassignedCounts = {};
@@ -140,19 +219,16 @@ router.get('/', async (req, res, next) => {
 
     const totalTickets = (
       await db
-        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE 1=1 ${dateSql} ${mailboxSql}`)
+        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 0 ${dateSql} ${mailboxSql}`)
         .get(...dateParams, ...mailboxParams)
     ).c;
 
     // Mailbox list itself is also scoped - an admin restricted to certain
     // mailboxes shouldn't even see other mailboxes' rows (with a count of
     // 0) in this table, since that still reveals which mailboxes exist.
-    const mailboxListSql = accessibleMailboxIds === null
-      ? ''
-      : accessibleMailboxIds.length === 0
-        ? 'WHERE 1 = 0'
-        : 'WHERE m.id = ANY(?)';
-    const mailboxListParams = accessibleMailboxIds && accessibleMailboxIds.length ? [accessibleMailboxIds] : [];
+    const mailboxListSql = scope.listSql;
+    const mailboxListParams = scope.listParams;
+
     // Per-status breakdown alongside the total, so unassigned + assigned +
     // replied + closed always sums to c (both computed with the exact same
     // is_automated/date-range filters, so they can't drift apart).
@@ -174,6 +250,8 @@ router.get('/', async (req, res, next) => {
       first_response: await tatFor(FIRST_RESPONSE_EXPR, '', []),
       resolution: await tatFor(RESOLUTION_EXPR, '', []),
     };
+
+    const overallSla = await slaFor('', []);
 
     // Daily TAT trend, for the Dashboard's "TAT over time" chart - one row
     // per calendar day (by first_received_at) with that day's average
@@ -213,7 +291,10 @@ router.get('/', async (req, res, next) => {
       total_tickets: totalTickets,
       per_mailbox: perMailbox,
       tat: overallTat,
+      sla: overallSla,
       tat_trend: tatTrend,
+      mailbox_filter: { options: scope.options, included: scope.included, excluded: scope.excluded },
+
       from_date: from_date || null,
       to_date: to_date || null,
     });
