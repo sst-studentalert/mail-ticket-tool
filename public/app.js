@@ -263,7 +263,10 @@ async function renderTickets() {
       <h2 style="margin:0;">Tickets</h2>
     </div>
     ${!isAdmin ? '<p class="small">Showing tickets assigned to you.</p>' : ''}
-    <div class="filters">
+    <div class="filters" style="position:relative;">
+      <div style="display:flex;align-items:flex-end;justify-content:flex-end;min-width:auto;">
+        <button type="button" class="secondary-btn" id="tickets-clear-filters" style="white-space:nowrap;">Clear filters</button>
+      </div>
       <div>
         <label>Mailbox</label>
         <select id="f-mailbox">
@@ -323,6 +326,27 @@ async function renderTickets() {
     const node = el(id);
     if (node) node.addEventListener('change', applyFiltersAndReload);
   });
+
+  const clearTicketsBtn = el('tickets-clear-filters');
+  if (clearTicketsBtn) {
+    clearTicketsBtn.addEventListener('click', () => {
+      state.filters = {
+        mailbox_id: '',
+        assignee_id: '',
+        status: '',
+        automated: '',
+        tag: '',
+        q: '',
+        from_date: '',
+        to_date: '',
+      };
+      ['f-mailbox', 'f-assignee', 'f-status', 'f-automated', 'f-tag', 'f-q', 'f-from', 'f-to'].forEach((id) => {
+        const node = el(id);
+        if (node) node.value = '';
+      });
+      loadTickets();
+    });
+  }
   let debounce;
   ['f-tag', 'f-q'].forEach((id) => {
     el(id).addEventListener('input', () => {
