@@ -241,7 +241,7 @@ tr.ticket-row:hover { background: #f8fafc; }
   padding-left: 90px;
 }
 /* ===================================================================
-   Dashboard theme â€” append to the end of public/style.css
+   Dashboard theme — append to the end of public/style.css
    ===================================================================
 
    SET THIS FIRST: --brand below is a placeholder academic blue. Replace
@@ -487,7 +487,7 @@ table.dash tbody tr.link-row:hover td { background: var(--brand-tint); }
 .tile .v { font-size: 25px; }
 
 /* ================================================================
-   SST-style dark mode â€” dark by default, light mode via toggle
+   SST-style dark mode — dark by default, light mode via toggle
    ================================================================ */
 :root {
   --bg:#090b10; --panel:#10141b; --border:#252b36; --text:#f3f5f7;
@@ -543,3 +543,163 @@ table.dash tbody tr:nth-child(even) td { background:rgba(255,255,255,.015); }
 .tile .v { font-size:26px; font-weight:600; letter-spacing:-.02em; }
 .dash-card { border-radius:10px; }
 table.dash td { padding:14px 18px; }
+
+/* ================================================================
+   Dark-mode visibility + form-control fixes
+   ================================================================ */
+
+/* Checkboxes and radio buttons must never inherit the global
+   input { width:100% } rule. Give them a clear, clickable size. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--brand);
+  flex: 0 0 18px;
+  cursor: pointer;
+}
+
+/* Learner merge selector column */
+table.dash th.merge-select-col,
+table.dash td.merge-select-col {
+  width: 48px;
+  min-width: 48px;
+  max-width: 48px;
+  text-align: center;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+/* The current learner merge markup uses the first table column for
+   selection, so keep that column compact and centered. */
+table.dash th:first-child input[type="checkbox"],
+table.dash td:first-child input[type="checkbox"] {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Rich-text toolbar was using a light hard-coded background with light
+   dark-mode text. Use theme variables instead. */
+.rich-toolbar-btn {
+  background: var(--line-soft) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line) !important;
+  min-width: 34px;
+  min-height: 30px;
+  padding: 4px 10px;
+}
+.rich-toolbar-btn:hover {
+  background: var(--line) !important;
+  color: var(--ink) !important;
+  border-color: var(--brand-line) !important;
+}
+
+/* Secondary buttons, including Reply All / merge-related controls,
+   remain readable in dark mode. */
+button.secondary {
+  background: var(--line-soft) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line) !important;
+}
+button.secondary:hover {
+  background: var(--line) !important;
+  color: var(--ink) !important;
+}
+
+/* The merge confirmation card uses --panel-soft in the inline markup.
+   Define it so the panel is visible in both themes. */
+:root {
+  --panel-soft: #171c25;
+}
+:root[data-theme="light"] {
+  --panel-soft: #f1f3f6;
+}
+
+/* Merge confirmation option cards */
+.merge-primary-option,
+label[style*="border:1px solid var(--line-soft)"] {
+  color: var(--ink);
+  background: var(--paper);
+}
+
+/* Make small helper text readable without becoming too bright. */
+.small,
+.stat-row,
+.reply-field label,
+.side-field label {
+  color: var(--ink-soft);
+}
+
+/* Inputs/selects in the ticket modal */
+input, select, textarea, .reply-editor {
+  background: var(--panel) !important;
+  color: var(--text) !important;
+  border-color: var(--line) !important;
+}
+input:focus, select:focus, textarea:focus, .reply-editor:focus {
+  outline: 2px solid var(--brand-line);
+  outline-offset: 1px;
+}
+
+/* Native select option lists can otherwise inherit a light browser theme. */
+select option {
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* Ticket/thread text surfaces */
+.body-box,
+.thread-message.inbound {
+  background: var(--line-soft) !important;
+  color: var(--ink) !important;
+  border-color: var(--line) !important;
+}
+.thread-message.outbound {
+  background: var(--brand-tint) !important;
+  color: var(--ink) !important;
+  border-color: var(--brand-line) !important;
+}
+.thread-message-body,
+.thread-message-body * {
+  color: inherit;
+}
+
+/* Keep the modal's close control visible on dark backgrounds. */
+.modal .close-x {
+  color: var(--ink-soft) !important;
+  background: transparent !important;
+}
+.modal .close-x:hover {
+  background: var(--line-soft) !important;
+  color: var(--ink) !important;
+}
+
+/* Info/error banners should remain legible in dark mode. */
+.error-banner {
+  background: #32171a !important;
+  color: #ffb4b4 !important;
+  border: 1px solid #5b282c;
+}
+.info-banner {
+  background: #11271d !important;
+  color: #9ee6bd !important;
+  border: 1px solid #245a3e;
+}
+
+/* Do not let hard-coded light table striping leak into dark mode. */
+table.dash tbody tr:nth-child(even) td {
+  background: rgba(255,255,255,.015) !important;
+}
+
+/* Ensure table text and headers remain visible. */
+table.dash th,
+table.dash td {
+  color: var(--ink);
+}
+table.dash th {
+  color: var(--ink-faint);
+}
