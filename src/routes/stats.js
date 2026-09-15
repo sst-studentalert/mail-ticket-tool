@@ -87,8 +87,7 @@ router.get('/', async (req, res, next) => {
     const mailboxSql = scope.sql;
     const mailboxParams = scope.params;
 
-    // SLA calculation is scoped to this request's date and mailbox filters.
-async function slaFor(extraWhere, extraParams) {
+    async function slaFor(extraWhere, extraParams) {
       const passExpr = slaPassExpr();
       const row = await db
         .prepare(
@@ -108,7 +107,6 @@ async function slaFor(extraWhere, extraParams) {
         percent: total ? Math.round((met / total) * 100) : null,
       };
     }
-    
 
     // Computes { avg_seconds, avg_human, sample_size } for a TAT metric over
     // a given WHERE clause (params must match placeholders in extraWhere),
@@ -144,8 +142,13 @@ async function slaFor(extraWhere, extraParams) {
 
     const members = await db.prepare('SELECT id, name, email FROM team_members ORDER BY name').all();
 
+    // Include current team members first.
     const perAssignee = [];
+    const knownAssigneeIds = new Set();
+
     for (const member of members) {
+      knownAssigneeIds.add(String(member.id));
+
       const counts = {};
       for (const status of STATUSES) {
         counts[status] = await countFor('AND assignee_id = ? AND status = ?', [member.id, status]);
@@ -157,6 +160,49 @@ async function slaFor(extraWhere, extraParams) {
       const sla = await slaFor('AND assignee_id = ?', [member.id]);
 
       perAssignee.push({ member, counts, tat: { first_response: firstResponseTat, resolution: resolutionTat }, sla });
+    }
+
+    // Some historical tickets can still contain an assignee_id whose team
+    // member has since been removed. Those tickets are still real workload,
+    // so do not let them disappear from the Dashboard totals. Add one clearly
+    // labelled "Former / unknown assignee" row for those records.
+    const orphanAssignees = await db
+      .prepare(
+        `SELECT DISTINCT assignee_id
+         FROM tickets
+         WHERE assignee_id IS NOT NULL
+           AND is_automated = 0
+           ${dateSql} ${mailboxSql}`
+      )
+      .all(...dateParams, ...mailboxParams);
+
+    for (const row of orphanAssignees) {
+      const assigneeId = String(row.assignee_id);
+      if (knownAssigneeIds.has(assigneeId)) continue;
+
+      const counts = {};
+      for (const status of STATUSES) {
+        counts[status] = await countFor('AND assignee_id = ? AND status = ?', [row.assignee_id, status]);
+      }
+      counts.total = STATUSES.reduce((sum, s) => sum + counts[s], 0);
+
+      if (counts.total === 0) continue;
+
+      const firstResponseTat = await tatFor(FIRST_RESPONSE_EXPR, 'AND assignee_id = ?', [row.assignee_id]);
+      const resolutionTat = await tatFor(RESOLUTION_EXPR, 'AND assignee_id = ?', [row.assignee_id]);
+      const sla = await slaFor('AND assignee_id = ?', [row.assignee_id]);
+
+      perAssignee.push({
+        member: {
+          id: row.assignee_id,
+          name: 'Former / unknown assignee',
+          email: '',
+          historical: true,
+        },
+        counts,
+        tat: { first_response: firstResponseTat, resolution: resolutionTat },
+        sla,
+      });
     }
 
     const unassignedCounts = {};
@@ -173,7 +219,7 @@ async function slaFor(extraWhere, extraParams) {
 
     const totalTickets = (
       await db
-        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE 1=1 ${dateSql} ${mailboxSql}`)
+        .prepare(`SELECT COUNT(*) AS c FROM tickets WHERE is_automated = 0 ${dateSql} ${mailboxSql}`)
         .get(...dateParams, ...mailboxParams)
     ).c;
 
