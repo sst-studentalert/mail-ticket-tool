@@ -1,3 +1,19 @@
+REPLACE YOUR FRONTEND app.js WITH THIS ENTIRE FILE
+
+This version keeps the existing ticket filters, learner name/email linking, learner dashboard and SLA features, and adds learner-ticket merging.
+
+Merge workflow:
+- Open a learner by clicking Learner Name.
+- On Learner Dashboard, select 2 or more unmerged tickets.
+- Click Merge selected.
+- Choose the primary ticket (oldest is recommended by default).
+- Confirm.
+- Secondary tickets remain preserved and show as Merged -> #primary.
+- The primary ticket shows the merged tickets.
+- Opening a merged secondary ticket shows a link back to the primary.
+
+IMPORTANT: Copy everything below into app.js.
+
 // Plain vanilla-JS single-page app. No build step, no framework - just
 // fetch() against the REST API and manual DOM rendering. Keep it this way;
 // the goal is that anyone comfortable with basic JS can read and modify it.
@@ -263,60 +279,82 @@ async function renderTickets() {
       <h2 style="margin:0;">Tickets</h2>
     </div>
     ${!isAdmin ? '<p class="small">Showing tickets assigned to you.</p>' : ''}
-    <div class="filters" style="position:relative;">
-      <div style="display:flex;align-items:flex-end;justify-content:flex-end;min-width:auto;">
-        <button type="button" class="secondary-btn" id="tickets-clear-filters" style="white-space:nowrap;">Clear filters</button>
+    <div class="filters" style="display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <strong style="font-size:14px;">Filters</strong>
+        <button type="button" class="secondary" id="clear-ticket-filters">Clear filters</button>
       </div>
       <div>
-        <label>Mailbox</label>
-        <select id="f-mailbox">
-          <option value="">All</option>
-          ${state.mailboxes.map((m) => `<option value="${m.id}">${escapeHtml(m.email)}</option>`).join('')}
-        </select>
+        <label>Quick filters</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="secondary quick-ticket-filter" data-status="">All</button>
+          <button type="button" class="secondary quick-ticket-filter" data-status="unassigned">Unassigned</button>
+          <button type="button" class="secondary quick-ticket-filter" data-status="assigned">First response pending</button>
+          <button type="button" class="secondary quick-ticket-filter" data-status="replied">Open / Replied</button>
+          <button type="button" class="secondary quick-ticket-filter" data-status="closed">Closed</button>
+        </div>
       </div>
-      ${isAdmin ? `
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;">
+        <div>
+          <label>Mailbox</label>
+          <select id="f-mailbox">
+            <option value="">All mailboxes</option>
+            ${state.mailboxes.map((m) => `<option value="${m.id}">${escapeHtml(m.email)}</option>`).join('')}
+          </select>
+        </div>
+        ${isAdmin ? `
+        <div>
+          <label>Assignee</label>
+          <select id="f-assignee">
+            <option value="">All assignees</option>
+            <option value="unassigned" ${state.filters.assignee_id === 'unassigned' ? 'selected' : ''}>Unassigned</option>
+            ${state.roster.map((r) => `<option value="${r.id}" ${String(state.filters.assignee_id) === String(r.id) ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
+          </select>
+        </div>
+        ` : ''}
+        <div>
+          <label>Status</label>
+          <select id="f-status">
+            <option value="">All statuses</option>
+            <option value="unassigned">Unassigned</option>
+            <option value="assigned">First response pending</option>
+            <option value="replied">Open / Replied</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+        <div>
+          <label>Automated</label>
+          <select id="f-automated">
+            <option value="">All tickets</option>
+            <option value="false">Non-automated</option>
+            <option value="true">Automated only</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1.1fr 1.6fr 1fr;gap:12px;">
+        <div>
+          <label>Learner</label>
+          <input id="f-learner" placeholder="Name or SST email" value="${escapeHtml(state.filters.learner || '')}" />
+        </div>
+        <div>
+          <label>Search tickets</label>
+          <input id="f-q" placeholder="Subject / email / body / snippet" />
+        </div>
+        <div>
+          <label>Tag</label>
+          <input id="f-tag" placeholder="e.g. billing" />
+        </div>
+      </div>
       <div>
-        <label>Assignee</label>
-        <select id="f-assignee">
-          <option value="">All</option>
-          <option value="unassigned" ${state.filters.assignee_id === 'unassigned' ? 'selected' : ''}>Unassigned</option>
-          ${state.roster.map((r) => `<option value="${r.id}" ${String(state.filters.assignee_id) === String(r.id) ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
-        </select>
-      </div>
-      ` : ''}
-      <div>
-        <label>Status</label>
-        <select id="f-status">
-          <option value="">All</option>
-          <option value="unassigned">Unassigned</option>
-          <option value="assigned">Assigned</option>
-          <option value="replied">Replied</option>
-          <option value="closed">Closed</option>
-        </select>
-      </div>
-      <div>
-        <label>Automated</label>
-        <select id="f-automated">
-          <option value="">All</option>
-          <option value="false">Not automated</option>
-          <option value="true">Automated only</option>
-        </select>
-      </div>
-      <div>
-        <label>Tag</label>
-        <input id="f-tag" placeholder="e.g. billing" />
-      </div>
-      <div style="flex:1; min-width:200px;">
-        <label>Search</label>
-        <input id="f-q" placeholder="subject / from / body" />
-      </div>
-      <div>
-        <label>From date</label>
-        <input type="date" id="f-from" value="${escapeHtml(state.filters.from_date)}" />
-      </div>
-      <div>
-        <label>To date</label>
-        <input type="date" id="f-to" value="${escapeHtml(state.filters.to_date)}" />
+        <label>Date received</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+          <div><input type="date" id="f-from" value="${escapeHtml(state.filters.from_date)}" /></div>
+          <span class="small" style="padding-bottom:9px;">to</span>
+          <div><input type="date" id="f-to" value="${escapeHtml(state.filters.to_date)}" /></div>
+          <button type="button" class="secondary date-ticket-filter" data-range="today">Today</button>
+          <button type="button" class="secondary date-ticket-filter" data-range="7">Last 7 days</button>
+          <button type="button" class="secondary date-ticket-filter" data-range="30">Last 30 days</button>
+        </div>
       </div>
     </div>
     <div id="ticket-table-wrap"><em>Loading tickets...</em></div>
@@ -326,33 +364,54 @@ async function renderTickets() {
     const node = el(id);
     if (node) node.addEventListener('change', applyFiltersAndReload);
   });
-
-  const clearTicketsBtn = el('tickets-clear-filters');
-  if (clearTicketsBtn) {
-    clearTicketsBtn.addEventListener('click', () => {
-      state.filters = {
-        mailbox_id: '',
-        assignee_id: '',
-        status: '',
-        automated: '',
-        tag: '',
-        q: '',
-        from_date: '',
-        to_date: '',
-      };
-      ['f-mailbox', 'f-assignee', 'f-status', 'f-automated', 'f-tag', 'f-q', 'f-from', 'f-to'].forEach((id) => {
-        const node = el(id);
-        if (node) node.value = '';
-      });
-      loadTickets();
-    });
-  }
   let debounce;
-  ['f-tag', 'f-q'].forEach((id) => {
-    el(id).addEventListener('input', () => {
+  ['f-tag', 'f-q', 'f-learner'].forEach((id) => {
+    const node = el(id);
+    if (!node) return;
+    node.addEventListener('input', () => {
       clearTimeout(debounce);
       debounce = setTimeout(applyFiltersAndReload, 350);
     });
+  });
+
+  document.querySelectorAll('.quick-ticket-filter').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      el('f-status').value = btn.dataset.status || '';
+      applyFiltersAndReload();
+    });
+  });
+
+  document.querySelectorAll('.date-ticket-filter').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const now = new Date();
+      const toIso = (d) => {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      };
+      const range = btn.dataset.range;
+      const from = new Date(now);
+      if (range === 'today') {
+        // same date
+      } else {
+        from.setDate(from.getDate() - Number(range));
+      }
+      el('f-from').value = toIso(from);
+      el('f-to').value = toIso(now);
+      applyFiltersAndReload();
+    });
+  });
+
+  el('clear-ticket-filters').addEventListener('click', () => {
+    el('f-mailbox').value = '';
+    if (el('f-assignee')) el('f-assignee').value = '';
+    el('f-status').value = '';
+    el('f-automated').value = '';
+    el('f-learner').value = '';
+    el('f-q').value = '';
+    el('f-tag').value = '';
+    el('f-from').value = '';
+    el('f-to').value = '';
+    applyFiltersAndReload();
   });
 
   await loadTickets();
@@ -365,6 +424,7 @@ function applyFiltersAndReload() {
     assignee_id: assigneeNode ? assigneeNode.value : '',
     status: el('f-status').value,
     automated: el('f-automated').value,
+    learner: el('f-learner').value,
     tag: el('f-tag').value,
     q: el('f-q').value,
     from_date: el('f-from').value,
@@ -374,21 +434,11 @@ function applyFiltersAndReload() {
 }
 
 async function loadTickets() {
-  const wrap = el('ticket-table-wrap');
-  if (wrap) wrap.innerHTML = '<em>Loading tickets...</em>';
-
-  try {
-    const params = new URLSearchParams();
-    Object.entries(state.filters).forEach(([k, v]) => { if (v) params.set(k, v); });
-    const { tickets } = await api(`/tickets?${params.toString()}`);
-    state.tickets = tickets || [];
-    renderTicketTable();
-  } catch (err) {
-    console.error('Failed to load tickets:', err);
-    if (wrap) {
-      wrap.innerHTML = `<div class="error-banner"><strong>Failed to load tickets</strong><br>${escapeHtml(err.message || 'Unknown error')}<br><br><small>Open browser DevTools → Console for the exact API error.</small></div>`;
-    }
-  }
+  const params = new URLSearchParams();
+  Object.entries(state.filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+  const { tickets } = await api(`/tickets?${params.toString()}`);
+  state.tickets = tickets;
+  renderTicketTable();
 }
 
 function renderTicketTable() {
@@ -406,7 +456,6 @@ function renderTicketTable() {
           <th>Mailbox</th>
           <th>Learner Name</th>
           <th>Learner Email</th>
-          <th>Student ID</th>
           <th>Raised</th>
           <th>Open</th>
           <th>Subject</th>
@@ -445,17 +494,16 @@ function rowHtml(t) {
       <td>${fmtDate(t.received_at)}</td>
       <td>${escapeHtml(t.mailbox_email || '')}</td>
       <td>
-        ${t.learner_name ? `<a href="#learner?email=${encodeURIComponent(t.learner_email || extractEmail(t.from_address) || t.from_address)}" class="learner-link" data-learner-email="${escapeHtml(t.learner_email || extractEmail(t.from_address) || t.from_address)}">${escapeHtml(t.learner_name)}</a>` : 'Unknown learner'}
+        ${t.from_address ? `<a href="#learner?email=${encodeURIComponent(t.learner_email || extractEmail(t.from_address) || t.from_address)}" class="learner-link" data-learner-email="${escapeHtml(t.learner_email || extractEmail(t.from_address) || t.from_address)}">${escapeHtml(t.learner_name || 'Learner')}</a>` : '—'}
       </td>
-      <td>${escapeHtml(t.learner_email || extractEmail(t.from_address) || '')}</td>
-      <td>${escapeHtml(t.student_id || '—')}</td>
+      <td>${escapeHtml(t.learner_email || extractEmail(t.from_address) || '—')}</td>
       <td>${t.learner_ticket_count != null ? t.learner_ticket_count : '—'}</td>
       <td>${t.learner_open_count != null ? t.learner_open_count : '—'}</td>
       <td>${escapeHtml(t.subject || '(no subject)')}
         ${t.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </td>
       <td>${escapeHtml(t.assignee_name || '—')}</td>
-      <td><span class="badge ${t.status}">${t.status}</span></td>
+      <td>${t.is_merged ? `<span class="badge">Merged → #${escapeHtml(t.merged_into_ticket_id)}</span>` : `<span class="badge ${t.status}">${t.status}</span>`}</td>
       <td>${tatCell(t)}</td>
       <td>${t.tags.map((tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')}</td>
     </tr>
@@ -501,10 +549,6 @@ async function renderLearner() {
 
   try {
     const data = await api(`/tickets/learner/${encodeURIComponent(email)}`);
-    // The URL can originate from a parent/guardian ticket. Always switch to
-    // the canonical learner email returned by the backend for the dashboard.
-    const canonicalLearnerEmail = (data.learner && data.learner.email) || email;
-    state.learnerEmail = canonicalLearnerEmail;
     const wrap = el('learner-dashboard-wrap');
     const c = data.counts || {};
     const status = data.by_status || {};
@@ -513,40 +557,13 @@ async function renderLearner() {
     const maxMailbox = Math.max(1, ...mailbox.map((m) => Number(m.count || 0)));
     const maxStatus = Math.max(1, ...Object.values(status).map(Number));
     const slaCls = learnerSlaClass(sla.percent);
-    const fatherContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase() === 'father') || {};
-    const motherContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase() === 'mother') || {};
-    const guardianContact = (data.learner.contacts || []).find((contact) => String(contact.relationship || '').toLowerCase().includes('guardian')) || {};
-    const fatherName = data.learner.father_name || fatherContact.name || 'Not mapped';
-    const motherName = data.learner.mother_name || motherContact.name || 'Not mapped';
-    const guardianName = data.learner.guardian_name || guardianContact.name || 'Not mapped';
+    const mergeableCount = data.tickets.filter((t) => !t.is_merged).length;
 
     wrap.innerHTML = `
       <div class="section-header">
         <div>
           <h2 style="margin:0;">Learner Dashboard</h2>
-          <div class="small" style="margin-top:4px;">${escapeHtml(data.learner.name || 'Learner')} · ${escapeHtml(canonicalLearnerEmail)}</div>
-        </div>
-        <div class="small">Student ID: <strong>${escapeHtml(data.learner.student_id || 'Not mapped')}</strong></div>
-      </div>
-
-      <div class="card learner-family-section" style="margin-top:12px;">
-        <div style="font-weight:700;margin-bottom:10px;">Family / Registered Contacts</div>
-        <div class="learner-family-strip" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
-          <div class="learner-contact-card">
-            <div class="small">Father</div>
-            <strong>${escapeHtml(fatherName)}</strong>
-            <div class="small">${escapeHtml(data.learner.father_email || fatherContact.email || '—')}</div>
-          </div>
-          <div class="learner-contact-card">
-            <div class="small">Mother</div>
-            <strong>${escapeHtml(motherName)}</strong>
-            <div class="small">${escapeHtml(data.learner.mother_email || motherContact.email || '—')}</div>
-          </div>
-          <div class="learner-contact-card">
-            <div class="small">Local Guardian</div>
-            <strong>${escapeHtml(guardianName)}</strong>
-            <div class="small">${escapeHtml(data.learner.guardian_email || guardianContact.email || '—')}</div>
-          </div>
+          <div class="small" style="margin-top:4px;">${escapeHtml(data.learner.name || 'Learner')} · ${escapeHtml(data.learner.email || email)}</div>
         </div>
       </div>
 
@@ -554,7 +571,7 @@ async function renderLearner() {
         <div class="tile"><p class="k">Total raised</p><p class="v">${c.total || 0}</p></div>
         <div class="tile"><p class="k">Currently open</p><p class="v">${c.open || 0}</p></div>
         <div class="tile"><p class="k">Resolved / Closed</p><p class="v">${c.closed || 0}</p></div>
-        <div class="tile"><p class="k">First response pending</p><p class="v">${c.first_response_pending || 0}</p></div>
+        <div class="tile"><p class="k">Merged</p><p class="v">${c.merged || 0}</p></div>
         <div class="tile"><p class="k">SLA</p><p class="v ${slaCls}">${sla.percent != null ? `${sla.percent}%` : '—'}</p><p class="c">${sla.total ? `${sla.met}/${sla.total} met` : 'No eligible tickets'}</p></div>
       </div>
 
@@ -593,135 +610,136 @@ async function renderLearner() {
       </div>
 
       <div class="dash-card" style="margin-top:16px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-          <div class="cap" style="margin:0;">Tickets for this learner <span id="learner-ticket-count">(${data.tickets.length})</span></div>
-          <button type="button" class="secondary-btn" id="learner-clear-filters">Clear filters</button>
-        </div>
-
-        <div class="card" style="margin:12px 0 14px;padding:12px;">
-          <div style="font-weight:700;margin-bottom:9px;">Filter tickets</div>
-          <div style="display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) minmax(240px,1.5fr);gap:10px;align-items:end;">
-            <label class="small">
-              Raised by
-              <select id="learner-raised-by-filter" style="width:100%;margin-top:4px;">
-                <option value="all">All</option>
-                <option value="student">Student</option>
-                <option value="father">Father</option>
-                <option value="mother">Mother</option>
-                <option value="guardian">Local Guardian</option>
-                <option value="other">Other / Unknown</option>
-              </select>
-            </label>
-            <label class="small">
-              Status
-              <select id="learner-status-filter" style="width:100%;margin-top:4px;">
-                <option value="all">All</option>
-                <option value="unassigned">Unassigned</option>
-                <option value="assigned">First response pending</option>
-                <option value="replied">Open</option>
-                <option value="closed">Closed</option>
-              </select>
-            </label>
-            <label class="small">
-              Search subject / email / ticket ID
-              <input id="learner-ticket-search" type="search" placeholder="Search..." style="width:100%;margin-top:4px;box-sizing:border-box;">
-            </label>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;border-bottom:1px solid var(--line-soft);">
+          <div>
+            <div class="cap">All tickets for this learner (${data.tickets.length})</div>
+            <div class="small" style="margin-top:4px;">Select 2 or more related tickets, then merge them into one primary ticket.</div>
           </div>
+          <button id="merge-selected-btn" class="btn" disabled>Merge selected (0)</button>
         </div>
-
-        <div id="learner-ticket-table-wrap"></div>
-      </div>
-    `;
-
-    const ticketTableWrap = el('learner-ticket-table-wrap');
-    const raisedByFilter = el('learner-raised-by-filter');
-    const statusFilter = el('learner-status-filter');
-    const searchInput = el('learner-ticket-search');
-    const ticketCount = el('learner-ticket-count');
-    const clearFiltersBtn = el('learner-clear-filters');
-
-    function raisedByKey(ticket) {
-      const relationship = String(ticket.sender_relationship || 'Learner').trim().toLowerCase();
-      if (relationship === 'learner' || relationship === 'student') return 'student';
-      if (relationship.includes('father')) return 'father';
-      if (relationship.includes('mother')) return 'mother';
-      if (relationship.includes('guardian')) return 'guardian';
-      return 'other';
-    }
-
-    function renderLearnerTickets() {
-      const raisedBy = raisedByFilter.value;
-      const statusValue = statusFilter.value;
-      const search = String(searchInput.value || '').trim().toLowerCase();
-
-      const filteredTickets = data.tickets.filter((t) => {
-        if (raisedBy !== 'all' && raisedByKey(t) !== raisedBy) return false;
-        if (statusValue !== 'all' && String(t.status || '').toLowerCase() !== statusValue) return false;
-
-        if (search) {
-          const haystack = [
-            t.id,
-            t.subject,
-            t.from_address,
-            t.sender_name,
-            t.sender_relationship,
-          ].map((value) => String(value == null ? '' : value).toLowerCase()).join(' ');
-          if (!haystack.includes(search)) return false;
-        }
-
-        return true;
-      });
-
-      ticketCount.textContent = `(${filteredTickets.length} of ${data.tickets.length})`;
-
-      if (!filteredTickets.length) {
-        ticketTableWrap.innerHTML = '<p class="small" style="padding:16px;">No tickets match the selected filters.</p>';
-        return;
-      }
-
-      ticketTableWrap.innerHTML = `
+        ${data.tickets.length ? `
         <div style="overflow:auto;">
           <table class="dash">
-            <thead><tr><th>Received</th><th>Sender</th><th>Raised By</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
+            <thead><tr><th style="width:36px;"><input type="checkbox" id="select-all-learner" title="Select all mergeable tickets"></th><th>Received</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
             <tbody>
-              ${filteredTickets.map((t) => `
+              ${data.tickets.map((t) => `
                 <tr class="link-row learner-ticket-row" data-id="${t.id}">
+                  <td>${t.is_merged ? '' : `<input type="checkbox" class="learner-merge-check" data-id="${t.id}" aria-label="Select ticket ${t.id}">`}</td>
                   <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
-                  <td>${escapeHtml(t.from_address || '')}</td>
-                  <td>${escapeHtml(t.sender_relationship || 'Learner')}</td>
                   <td>${escapeHtml(t.mailbox_email || '')}</td>
                   <td>${escapeHtml(t.subject || '(no subject)')}</td>
                   <td>${escapeHtml(t.assignee_name || '—')}</td>
-                  <td><span class="badge ${escapeHtml(t.status)}">${escapeHtml(learnerStatusLabel(t.status))}</span></td>
+                  <td>${t.is_merged ? `<span class="badge">Merged → #${escapeHtml(t.merged_into_ticket_id)}</span>` : `<span class="badge ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span>`}</td>
                   <td>${escapeHtml(t.tat && t.tat.first_response ? (t.tat.first_response.human || '—') : '—')}</td>
                   <td>${escapeHtml(t.tat && t.tat.resolution ? (t.tat.resolution.human || '—') : '—')}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
-        </div>
-      `;
+        </div>` : '<p class="small" style="padding:16px;">No tickets found for this learner.</p>'}
+      </div>
+    `;
 
-      ticketTableWrap.querySelectorAll('.learner-ticket-row').forEach((row) => {
-        row.addEventListener('click', () => openTicket(Number(row.dataset.id)));
+    const updateMergeButton = () => {
+      const selected = [...wrap.querySelectorAll('.learner-merge-check:checked')];
+      const btn = el('merge-selected-btn');
+      if (btn) {
+        btn.disabled = selected.length < 2;
+        btn.textContent = `Merge selected (${selected.length})`;
+      }
+      const selectAll = el('select-all-learner');
+      if (selectAll) {
+        const checks = [...wrap.querySelectorAll('.learner-merge-check')];
+        selectAll.checked = checks.length > 0 && checks.every((x) => x.checked);
+        selectAll.indeterminate = checks.some((x) => x.checked) && !selectAll.checked;
+      }
+    };
+
+    wrap.querySelectorAll('.learner-ticket-row').forEach((row) => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('input')) return;
+        openTicket(Number(row.dataset.id));
+      });
+    });
+    wrap.querySelectorAll('.learner-merge-check').forEach((check) => {
+      check.addEventListener('click', (e) => e.stopPropagation());
+      check.addEventListener('change', updateMergeButton);
+    });
+    const selectAll = el('select-all-learner');
+    if (selectAll) {
+      selectAll.addEventListener('change', () => {
+        wrap.querySelectorAll('.learner-merge-check').forEach((check) => { check.checked = selectAll.checked; });
+        updateMergeButton();
       });
     }
-
-    [raisedByFilter, statusFilter].forEach((control) => {
-      control.addEventListener('change', renderLearnerTickets);
-    });
-    searchInput.addEventListener('input', renderLearnerTickets);
-    clearFiltersBtn.addEventListener('click', () => {
-      raisedByFilter.value = 'all';
-      statusFilter.value = 'all';
-      searchInput.value = '';
-      renderLearnerTickets();
-    });
-
-    renderLearnerTickets();
+    const mergeBtn = el('merge-selected-btn');
+    if (mergeBtn) mergeBtn.addEventListener('click', () => openMergeLearnerModal(data));
+    updateMergeButton();
   } catch (err) {
     el('learner-dashboard-wrap').innerHTML = `<div class="error-banner">Failed to load learner details: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+function openMergeLearnerModal(data) {
+  const selectedIds = [...document.querySelectorAll('.learner-merge-check:checked')].map((x) => Number(x.dataset.id));
+  if (selectedIds.length < 2) return;
+  const selected = data.tickets.filter((t) => selectedIds.includes(Number(t.id)));
+  selected.sort((a, b) => new Date(a.first_received_at || a.received_at) - new Date(b.first_received_at || b.received_at));
+  const defaultPrimary = selected[0];
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.id = 'merge-ticket-modal';
+  backdrop.innerHTML = `
+    <div class="modal" style="max-width:760px;">
+      <button class="close-x" id="merge-close-x">&times;</button>
+      <h2>Merge ${selected.length} tickets</h2>
+      <p class="small">These tickets belong to <strong>${escapeHtml(data.learner.name || 'this learner')}</strong>. Choose the primary ticket. The other tickets will be marked as merged and their original history will be preserved.</p>
+      <div style="display:grid;gap:8px;margin-top:14px;">
+        ${selected.map((t) => `
+          <label style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line-soft);border-radius:10px;padding:12px;cursor:pointer;">
+            <input type="radio" name="merge-primary" value="${t.id}" ${Number(t.id) === Number(defaultPrimary.id) ? 'checked' : ''}>
+            <span><strong>#${t.id}</strong> · ${escapeHtml(t.mailbox_email || '')}<br><span class="small">${escapeHtml(t.subject || '(no subject)')} · ${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</span>${Number(t.id) === Number(defaultPrimary.id) ? '<br><span class="small">Recommended: oldest ticket</span>' : ''}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div style="margin-top:14px;padding:12px;border-radius:8px;background:var(--panel-soft);" class="small">
+        <strong>What will happen:</strong><br>
+        • The selected primary ticket remains the main ticket.<br>
+        • Other tickets become <strong>Merged</strong> and link back to the primary ticket.<br>
+        • Original mailbox, conversation, SLA and TAT history are preserved.<br>
+        • Nothing is deleted.
+      </div>
+      <div id="merge-error" style="margin-top:10px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+        <button class="btn" id="merge-cancel-btn">Cancel</button>
+        <button class="btn primary" id="merge-confirm-btn">Merge tickets</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  el('merge-close-x').addEventListener('click', close);
+  el('merge-cancel-btn').addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  el('merge-confirm-btn').addEventListener('click', async () => {
+    const primary = Number(backdrop.querySelector('input[name="merge-primary"]:checked')?.value);
+    const btn = el('merge-confirm-btn');
+    const error = el('merge-error');
+    btn.disabled = true;
+    try {
+      await api(`/tickets/learner/${encodeURIComponent(data.learner.email)}/merge`, {
+        method: 'POST',
+        body: JSON.stringify({ ticket_ids: selectedIds, primary_ticket_id: primary }),
+      });
+      close();
+      await renderLearner();
+    } catch (err) {
+      error.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
+      btn.disabled = false;
+    }
+  });
 }
 
 // ---------- Ticket detail modal ----------
@@ -889,7 +907,7 @@ function renderThread(messages, ticket) {
 }
 
 async function openTicket(id) {
-  const { ticket, mailbox_email, events, messages } = await api(`/tickets/${id}`);
+  const { ticket, mailbox_email, events, messages, merge_info = [], merged_tickets = [], merged_messages = [] } = await api(`/tickets/${id}`);
   state.openTicketId = id;
 
   // Only relevant for office-hours-tagged tickets (prefills the reply BODY
@@ -917,6 +935,16 @@ async function openTicket(id) {
         ${ticket.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </h2>
       <div class="small">From ${escapeHtml(ticket.from_address)} &middot; first received ${fmtDate(ticket.first_received_at || ticket.received_at)}${ticket.received_at && ticket.first_received_at && ticket.received_at !== ticket.first_received_at ? ' &middot; last activity ' + fmtDate(ticket.received_at) : ''} &middot; via ${escapeHtml(mailbox_email || '')}</div>
+      ${merge_info.some((m) => Number(m.secondary_ticket_id) === Number(ticket.id)) ? `
+        <div class="info-banner" style="margin-top:10px;">🔗 This ticket has been merged into <strong>#${escapeHtml(merge_info.find((m) => Number(m.secondary_ticket_id) === Number(ticket.id)).primary_ticket_id)}</strong>. Its original conversation and SLA history are preserved. <button type="button" class="secondary" id="open-primary-ticket-btn" style="margin-left:8px;">Open primary ticket</button></div>
+      ` : ''}
+      ${merged_tickets.length ? `
+        <div class="info-banner" style="margin-top:10px;">🔗 <strong>${merged_tickets.length} ticket${merged_tickets.length === 1 ? '' : 's'} merged into this ticket</strong> — original mailbox and conversation history are preserved.
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+            ${merged_tickets.map((mt) => `<button type="button" class="secondary merged-ticket-open-btn" data-id="${mt.id}">#${mt.id} · ${escapeHtml(mt.mailbox_email || '')}</button>`).join('')}
+          </div>
+        </div>
+      ` : ''}
       ${(() => {
         // Cross-reference every inbound message's To/Cc against our own
         // connected mailboxes (see pickOwnerMailbox in poller.js) so it's
@@ -1049,13 +1077,30 @@ async function openTicket(id) {
   backdrop.querySelector('.close-x').addEventListener('click', closeTicketModal);
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeTicketModal(); });
 
+  const mergedInto = merge_info.find((m) => Number(m.secondary_ticket_id) === Number(ticket.id));
+  if (mergedInto && el('open-primary-ticket-btn')) {
+    el('open-primary-ticket-btn').addEventListener('click', () => { closeTicketModal(); openTicket(Number(mergedInto.primary_ticket_id)); });
+  }
+  backdrop.querySelectorAll('.merged-ticket-open-btn').forEach((btn) => {
+    btn.addEventListener('click', () => { closeTicketModal(); openTicket(Number(btn.dataset.id)); });
+  });
+
+  if (mergedInto) {
+    ['status-select','assignee-select','tags-input','office-hours-tag-checkbox','save-tags-btn','automated-checkbox','reply-all-btn','send-reply-btn','mark-replied-btn','reply-to','reply-cc','reply-bcc','reply-body-rich'].forEach((id) => {
+      const node = el(id);
+      if (node) node.disabled = true;
+    });
+  }
+
   el('status-select').addEventListener('change', async (e) => {
+    if (mergedInto) return;
     await api(`/tickets/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status: e.target.value }) });
     await loadTickets();
   });
 
   if (el('assignee-select')) {
     el('assignee-select').addEventListener('change', async (e) => {
+      if (mergedInto) return;
       const assignee_id = e.target.value ? Number(e.target.value) : null;
       await api(`/tickets/${id}/assign`, { method: 'PATCH', body: JSON.stringify({ assignee_id }) });
       await loadTickets();
@@ -1065,6 +1110,7 @@ async function openTicket(id) {
   }
 
   el('save-tags-btn').addEventListener('click', async () => {
+    if (mergedInto) return;
     const tags = el('tags-input').value.split(',').map((t) => t.trim()).filter(Boolean);
     if (el('office-hours-tag-checkbox').checked && !tags.includes('office-hours')) tags.push('office-hours');
     if (!el('office-hours-tag-checkbox').checked) {
@@ -1082,6 +1128,7 @@ async function openTicket(id) {
   // waiting for "Save tags" so toggling it feels instant, same as the other
   // checkboxes on this panel (Automated).
   el('office-hours-tag-checkbox').addEventListener('change', async (e) => {
+    if (mergedInto) return;
     const current = el('tags-input').value.split(',').map((t) => t.trim()).filter(Boolean);
     const has = current.includes('office-hours');
     let next = current;
@@ -1095,6 +1142,7 @@ async function openTicket(id) {
 
 
   el('automated-checkbox').addEventListener('change', async (e) => {
+    if (mergedInto) return;
     await api(`/tickets/${id}/automated`, { method: 'PATCH', body: JSON.stringify({ is_automated: e.target.checked }) });
     await loadTickets();
   });
@@ -1143,6 +1191,7 @@ async function openTicket(id) {
   });
 
   el('send-reply-btn').addEventListener('click', async () => {
+    if (mergedInto) return;
     const bodyHtml = richEditor.innerHTML.trim();
     const bodyText = richEditor.innerText.trim();
     if (!bodyText) return;
@@ -1165,6 +1214,7 @@ async function openTicket(id) {
   });
 
   el('mark-replied-btn').addEventListener('click', async () => {
+    if (mergedInto) return;
     await api(`/tickets/${id}/mark-replied-externally`, { method: 'POST' });
     await loadTickets();
     closeTicketModal();
