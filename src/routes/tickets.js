@@ -76,6 +76,19 @@ function parseCsvLine(line) {
   return cells.map((v) => v.trim());
 }
 
+function normalizeSheetHeader(value) {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function findHeaderIndex(headers, patterns) {
+  return headers.findIndex((h) => patterns.some((p) => h === p || h.includes(p)));
+}
+
 function parseGoogleSheetCsv(text) {
   const lines = String(text || '')
     .replace(/^\uFEFF/, '')
@@ -84,30 +97,98 @@ function parseGoogleSheetCsv(text) {
 
   if (!lines.length) return {};
 
-  const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
-  const nameIndex = headers.findIndex((h) => h === 'name');
-  const emailIndex = headers.findIndex((h) => h === 'sst email');
+  const rawHeaders = parseCsvLine(lines[0]);
+  const headers = rawHeaders.map(normalizeSheetHeader);
+  const emailStarts = [];
 
-  if (nameIndex < 0 || emailIndex < 0) {
-    throw new Error(
-      `Google Sheet must contain columns "Name" and "SST Email". Found: ${headers.join(', ')}`
-    );
+  // The updated sheet can contain one or more student-data blocks side by side.
+  // Each block starts with "Email Address" and continues until the next one.
+  headers.forEach((h, i) => {
+    if (h === 'email address') emailStarts.push(i);
+  });
+
+  // Backward-compatible fallback for the older two-column Consolidated sheet.
+  if (!emailStarts.length) {
+    const nameIndex = headers.findIndex((h) => h === 'name');
+    const emailIndex = headers.findIndex((h) => h === 'sst email');
+    if (nameIndex < 0 || emailIndex < 0) {
+      throw new Error(
+        `Google Sheet must contain either the updated student-data columns or "Name" and "SST Email". Found: ${rawHeaders.join(', ')}`
+      );
+    }
+    const mapping = {};
+    for (let i = 1; i < lines.length; i += 1) {
+      const cells = parseCsvLine(lines[i]);
+      const email = normalizeLearnerEmail(cells[emailIndex] || '');
+      if (!email) continue;
+      if (!mapping[email]) {
+        mapping[email] = {
+          learner_email: email,
+          name: (cells[nameIndex] || '').trim() || email,
+          student_id: null,
+          status: null,
+          contacts: [{ email, relationship: 'Learner', name: (cells[nameIndex] || '').trim() || email }],
+          contact_emails: [email],
+        };
+      }
+    }
+    return mapping;
   }
 
   const mapping = {};
 
   for (let i = 1; i < lines.length; i += 1) {
     const cells = parseCsvLine(lines[i]);
-    const name = (cells[nameIndex] || '').trim();
-    const email = normalizeLearnerEmail(cells[emailIndex] || '');
 
-    if (!email) continue;
+    for (let b = 0; b < emailStarts.length; b += 1) {
+      const start = emailStarts[b];
+      const end = b + 1 < emailStarts.length ? emailStarts[b + 1] : headers.length;
+      const emailIndex = start;
+      const nameIndex = headers.findIndex((h, idx) => idx >= start && idx < end && h === 'full name (as per aadhar)');
+      const studentIdIndex = headers.findIndex((h, idx) => idx >= start && idx < end && h.startsWith('student') && h.includes('id'));
+      const fatherEmailIndex = headers.findIndex((h, idx) => idx >= start && idx < end && h.includes("father's email id"));
+      const motherEmailIndex = headers.findIndex((h, idx) => idx >= start && idx < end && h.includes("mother's email id"));
+      const guardianEmailIndex = headers.findIndex((h, idx) => idx >= start && idx < end && h.includes("local guardian's email id"));
 
-    // First row wins if the same email appears more than once.
-    if (!mapping[email]) {
-      mapping[email] = {
-        name: name || email,
+      const learnerEmail = normalizeLearnerEmail(cells[emailIndex] || '');
+      if (!learnerEmail) continue;
+
+      const name = (cells[nameIndex] || '').trim() || learnerEmail;
+      const studentId = (cells[studentIdIndex] || '').trim() || null;
+      const contacts = [{ email: learnerEmail, relationship: 'Learner', name }];
+
+      const addContact = (idx, relationship, fallbackName = '') => {
+        const email = normalizeLearnerEmail(cells[idx] || '');
+        if (!email || email === learnerEmail) return;
+        if (!contacts.some((c) => c.email === email)) {
+          contacts.push({ email, relationship, name: fallbackName || relationship });
+        }
       };
+
+      addContact(fatherEmailIndex, 'Father');
+      addContact(motherEmailIndex, 'Mother');
+      addContact(guardianEmailIndex, 'Guardian');
+
+      const record = {
+        learner_email: learnerEmail,
+        name,
+        student_id: studentId,
+        status: null,
+        contacts,
+        contact_emails: contacts.map((c) => c.email),
+      };
+
+      // First complete record wins for the learner's primary email. For parent
+      // emails, first matching learner wins as well; duplicates are ignored.
+      for (const contact of contacts) {
+        if (!mapping[contact.email]) {
+          mapping[contact.email] = {
+            ...record,
+            relationship: contact.relationship,
+            sender_name: contact.name,
+          };
+        }
+      }
     }
   }
 
@@ -214,19 +295,26 @@ async function getVisibility(req, alias = 't') {
   };
 }
 
-function buildLearnerCounts(rows) {
+function learnerIdentity(record) {
+  if (!record) return '';
+  return record.student_id || record.learner_email || '';
+}
+
+function buildLearnerCounts(rows, mapping) {
   const counts = new Map();
   for (const row of rows) {
-    const email = normalizeLearnerEmail(row.from_address);
-    if (!email) continue;
-    const current = counts.get(email) || { total: 0, open: 0, closed: 0, unassigned: 0, assigned: 0, replied: 0 };
+    const sender = normalizeLearnerEmail(row.from_address);
+    const record = mapping[sender] || null;
+    const key = learnerIdentity(record) || sender;
+    if (!key) continue;
+    const current = counts.get(key) || { total: 0, open: 0, closed: 0, unassigned: 0, assigned: 0, replied: 0 };
     current.total += 1;
     if (row.status === 'closed') current.closed += 1;
     else current.open += 1;
     if (row.status === 'unassigned') current.unassigned += 1;
     else if (row.status === 'assigned') current.assigned += 1;
     else if (row.status === 'replied') current.replied += 1;
-    counts.set(email, current);
+    counts.set(key, current);
   }
   return counts;
 }
@@ -400,11 +488,13 @@ router.get('/', async (req, res, next) => {
     if (learner) {
       const learnerMapping = await loadLearnerMapping();
       const needle = String(learner).trim().toLowerCase();
-      const matchingEmails = Object.entries(learnerMapping)
+      const matchingEmails = [...new Set(Object.entries(learnerMapping)
         .filter(([email, record]) =>
-          email.includes(needle) || String(record.name || '').toLowerCase().includes(needle)
+          email.includes(needle) ||
+          String(record.name || '').toLowerCase().includes(needle) ||
+          String(record.student_id || '').toLowerCase().includes(needle)
         )
-        .map(([email]) => email);
+        .flatMap(([email, record]) => record.contact_emails || [email]))];
 
       if (!matchingEmails.length) {
         clauses.push('1 = 0');
@@ -415,6 +505,21 @@ router.get('/', async (req, res, next) => {
           params.push(email, `%<${email}>%`);
         }
         clauses.push(`(${learnerClauses.join(' OR ')})`);
+      }
+    }
+
+    if (req.query.relationship) {
+      const learnerMapping = await loadLearnerMapping();
+      const relationship = String(req.query.relationship).trim().toLowerCase();
+      const matchingEmails = Object.entries(learnerMapping)
+        .filter(([, record]) => String(record.relationship || '').toLowerCase() === relationship)
+        .map(([email]) => email);
+      if (!matchingEmails.length) {
+        clauses.push('1 = 0');
+      } else {
+        const relationshipClauses = matchingEmails.map(() => '(LOWER(TRIM(t.from_address)) = ? OR LOWER(TRIM(t.from_address)) LIKE ?)');
+        for (const email of matchingEmails) params.push(email, `%<${email}>%`);
+        clauses.push(`(${relationshipClauses.join(' OR ')})`);
       }
     }
 
@@ -436,19 +541,23 @@ router.get('/', async (req, res, next) => {
     const learnerRows = await db
       .prepare(`SELECT t.from_address, t.status FROM tickets t WHERE t.is_automated = 0 ${visibility.sql}`)
       .all(...visibility.params);
-    const learnerCounts = buildLearnerCounts(learnerRows);
     const learnerMapping = await loadLearnerMapping();
+    const learnerCounts = buildLearnerCounts(learnerRows, learnerMapping);
 
     res.json({
       tickets: rows.map((row) => {
         const ticket = serializeTicket(row);
         const key = normalizeLearnerEmail(row.from_address);
         const mapping = learnerRecord(learnerMapping, row.from_address);
-        const counts = learnerCounts.get(key) || { total: 0, open: 0, closed: 0, unassigned: 0, assigned: 0, replied: 0 };
+        const identity = learnerIdentity(mapping) || key;
+        const counts = learnerCounts.get(identity) || { total: 0, open: 0, closed: 0, unassigned: 0, assigned: 0, replied: 0 };
         return {
           ...ticket,
           student_id: mapping ? mapping.student_id : null,
           learner_name: mapping ? mapping.name : null,
+          learner_email: mapping ? mapping.learner_email : key || null,
+          sender_relationship: mapping ? (mapping.relationship || 'Learner') : null,
+          sender_name: mapping ? mapping.sender_name : null,
           learner_ticket_count: counts.total,
           learner_open_count: counts.open,
           merged_into_ticket_id: row.merged_into_ticket_id || null,
@@ -471,8 +580,11 @@ router.get('/learner/:email', async (req, res, next) => {
 
     const learnerMapping = await loadLearnerMapping();
     const mapping = learnerMapping[normalizedEmail] || null;
+    const learnerEmails = mapping ? (mapping.contact_emails || [mapping.learner_email]) : [normalizedEmail];
 
     const visibility = await getVisibility(req, 't');
+    const senderClauses = learnerEmails.map(() => '(LOWER(TRIM(t.from_address)) = ? OR LOWER(TRIM(t.from_address)) LIKE ?)').join(' OR ');
+    const senderParams = learnerEmails.flatMap((email) => [email, `%<${email}>%`]);
     const rows = await db
       .prepare(
         `SELECT t.*, m.email AS mailbox_email, tm.name AS assignee_name, mg.primary_ticket_id AS merged_into_ticket_id
@@ -481,16 +593,20 @@ router.get('/learner/:email', async (req, res, next) => {
          LEFT JOIN team_members tm ON tm.id = t.assignee_id
          LEFT JOIN ticket_merges mg ON mg.secondary_ticket_id = t.id
          WHERE t.is_automated = 0
-           AND (
-             LOWER(TRIM(t.from_address)) = ?
-             OR LOWER(TRIM(t.from_address)) LIKE '%<' || ? || '>%' 
-           )
+           AND (${senderClauses})
            ${visibility.sql}
          ORDER BY t.first_received_at DESC, t.received_at DESC`
       )
-      .all(normalizedEmail, normalizedEmail, ...visibility.params);
+      .all(...senderParams, ...visibility.params);
 
-    const tickets = rows.map(serializeTicket);
+    const tickets = rows.map((row) => ({
+      ...serializeTicket(row),
+      learner_email: mapping ? mapping.learner_email : normalizedEmail,
+      student_id: mapping ? mapping.student_id : null,
+      learner_name: mapping ? mapping.name : null,
+      sender_relationship: mapping ? ((mapping.contacts || []).find((c) => c.email === normalizeLearnerEmail(row.from_address))?.relationship || 'Learner') : 'Learner',
+      sender_name: mapping ? ((mapping.contacts || []).find((c) => c.email === normalizeLearnerEmail(row.from_address))?.name || mapping.name) : null,
+    }));
     const byStatus = { unassigned: 0, assigned: 0, replied: 0, closed: 0 };
     const byMailbox = new Map();
     for (const t of tickets) {
@@ -509,10 +625,11 @@ router.get('/learner/:email', async (req, res, next) => {
 
     res.json({
       learner: {
-        email: requestedEmail || normalizedEmail,
+        email: mapping ? mapping.learner_email : (requestedEmail || normalizedEmail),
         student_id: mapping ? mapping.student_id : null,
         name: mapping ? mapping.name : null,
         status: mapping ? mapping.status : null,
+        contacts: mapping ? mapping.contacts : [],
       },
       counts: {
         total,
@@ -560,7 +677,13 @@ router.post('/learner/:email/merge', async (req, res, next) => {
     ).all(...ids, ...visibility.params);
 
     if (rows.length !== ids.length) return res.status(403).json({ error: 'One or more selected tickets are not accessible' });
-    if (rows.some((t) => normalizeLearnerEmail(t.from_address) !== normalizedEmail)) {
+    const mergeMapping = await loadLearnerMapping();
+    const requestedRecord = mergeMapping[normalizedEmail] || null;
+    const requestedIdentity = learnerIdentity(requestedRecord) || normalizedEmail;
+    if (rows.some((t) => {
+      const record = mergeMapping[normalizeLearnerEmail(t.from_address)] || null;
+      return (learnerIdentity(record) || normalizeLearnerEmail(t.from_address)) !== requestedIdentity;
+    })) {
       return res.status(400).json({ error: 'All selected tickets must belong to the same learner' });
     }
     if (rows.some((t) => t.merged_into_ticket_id)) {

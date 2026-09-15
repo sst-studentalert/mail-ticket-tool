@@ -274,7 +274,7 @@ async function renderTickets() {
           <button type="button" class="secondary quick-ticket-filter" data-status="closed">Closed</button>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;">
+      <div style="display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:12px;">
         <div>
           <label>Mailbox</label>
           <select id="f-mailbox">
@@ -303,6 +303,16 @@ async function renderTickets() {
           </select>
         </div>
         <div>
+          <label>Raised by</label>
+          <select id="f-relationship">
+            <option value="">Everyone</option>
+            <option value="Learner">Learner</option>
+            <option value="Father">Father</option>
+            <option value="Mother">Mother</option>
+            <option value="Guardian">Guardian</option>
+          </select>
+        </div>
+        <div>
           <label>Automated</label>
           <select id="f-automated">
             <option value="">All tickets</option>
@@ -314,7 +324,7 @@ async function renderTickets() {
       <div style="display:grid;grid-template-columns:1.1fr 1.6fr 1fr;gap:12px;">
         <div>
           <label>Learner</label>
-          <input id="f-learner" placeholder="Name or SST email" value="${escapeHtml(state.filters.learner || '')}" />
+          <input id="f-learner" placeholder="Learner name, email or Student ID" value="${escapeHtml(state.filters.learner || '')}" />
         </div>
         <div>
           <label>Search tickets</label>
@@ -341,7 +351,7 @@ async function renderTickets() {
     <div id="ticket-table-wrap"><em>Loading tickets...</em></div>
   `);
 
-  ['f-mailbox', 'f-assignee', 'f-status', 'f-automated', 'f-from', 'f-to'].forEach((id) => {
+  ['f-mailbox', 'f-assignee', 'f-status', 'f-relationship', 'f-automated', 'f-from', 'f-to'].forEach((id) => {
     const node = el(id);
     if (node) node.addEventListener('change', applyFiltersAndReload);
   });
@@ -386,6 +396,7 @@ async function renderTickets() {
     el('f-mailbox').value = '';
     if (el('f-assignee')) el('f-assignee').value = '';
     el('f-status').value = '';
+    if (el('f-relationship')) el('f-relationship').value = '';
     el('f-automated').value = '';
     el('f-learner').value = '';
     el('f-q').value = '';
@@ -404,6 +415,7 @@ function applyFiltersAndReload() {
     mailbox_id: el('f-mailbox').value,
     assignee_id: assigneeNode ? assigneeNode.value : '',
     status: el('f-status').value,
+    relationship: el('f-relationship') ? el('f-relationship').value : '',
     automated: el('f-automated').value,
     learner: el('f-learner').value,
     tag: el('f-tag').value,
@@ -436,7 +448,9 @@ function renderTicketTable() {
           <th>Received</th>
           <th>Mailbox</th>
           <th>Learner Name</th>
-          <th>Learner Email</th>
+          <th>Student ID</th>
+          <th>Sender Email</th>
+          <th>Raised by</th>
           <th>Raised</th>
           <th>Open</th>
           <th>Subject</th>
@@ -477,7 +491,9 @@ function rowHtml(t) {
       <td>
         ${t.from_address ? `<a href="#learner?email=${encodeURIComponent(t.learner_email || extractEmail(t.from_address) || t.from_address)}" class="learner-link" data-learner-email="${escapeHtml(t.learner_email || extractEmail(t.from_address) || t.from_address)}">${escapeHtml(t.learner_name || 'Learner')}</a>` : '—'}
       </td>
-      <td>${escapeHtml(t.learner_email || extractEmail(t.from_address) || '—')}</td>
+      <td>${escapeHtml(t.student_id || '—')}</td>
+      <td>${escapeHtml(t.from_address || '—')}</td>
+      <td><span class="relationship-badge ${String(t.sender_relationship || 'Learner').toLowerCase()}">${escapeHtml(t.sender_relationship || 'Unknown')}</span></td>
       <td>${t.learner_ticket_count != null ? t.learner_ticket_count : '—'}</td>
       <td>${t.learner_open_count != null ? t.learner_open_count : '—'}</td>
       <td>${escapeHtml(t.subject || '(no subject)')}
@@ -548,6 +564,19 @@ async function renderLearner() {
         </div>
       </div>
 
+      <div class="learner-profile-card">
+        <div class="learner-profile-title">Registered contacts</div>
+        <div class="learner-contacts">
+          ${(data.learner.contacts || []).map((c) => `
+            <div class="learner-contact-card">
+              <div class="contact-role">${escapeHtml(c.relationship || 'Contact')}</div>
+              <div class="contact-name">${escapeHtml(c.name || '')}</div>
+              <div class="contact-email">${escapeHtml(c.email || '')}</div>
+            </div>
+          `).join('') || '<div class="small">No registered contacts found.</div>'}
+        </div>
+      </div>
+
       <div class="tiles" style="margin-top:12px;">
         <div class="tile"><p class="k">Total raised</p><p class="v">${c.total || 0}</p></div>
         <div class="tile"><p class="k">Currently open</p><p class="v">${c.open || 0}</p></div>
@@ -601,12 +630,14 @@ async function renderLearner() {
         ${data.tickets.length ? `
         <div style="overflow:auto;">
           <table class="dash">
-            <thead><tr><th style="width:36px;"><input type="checkbox" id="select-all-learner" title="Select all mergeable tickets"></th><th>Received</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
+            <thead><tr><th class="merge-check-col"><input type="checkbox" id="select-all-learner" title="Select all mergeable tickets"></th><th>Received</th><th>Sender</th><th>Raised by</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
             <tbody>
               ${data.tickets.map((t) => `
                 <tr class="link-row learner-ticket-row" data-id="${t.id}">
-                  <td>${t.is_merged ? '' : `<input type="checkbox" class="learner-merge-check" data-id="${t.id}" aria-label="Select ticket ${t.id}">`}</td>
+                  <td class="merge-check-col">${t.is_merged ? '' : `<input type="checkbox" class="learner-merge-check" data-id="${t.id}" aria-label="Select ticket ${t.id}">`}</td>
                   <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
+                  <td>${escapeHtml(t.from_address || '')}</td>
+                  <td><span class="relationship-badge ${String(t.sender_relationship || 'Learner').toLowerCase()}">${escapeHtml(t.sender_relationship || 'Learner')}</span></td>
                   <td>${escapeHtml(t.mailbox_email || '')}</td>
                   <td>${escapeHtml(t.subject || '(no subject)')}</td>
                   <td>${escapeHtml(t.assignee_name || '—')}</td>
@@ -679,7 +710,7 @@ function openMergeLearnerModal(data) {
       <div style="display:grid;gap:8px;margin-top:14px;">
         ${selected.map((t) => `
           <label style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line-soft);border-radius:10px;padding:12px;cursor:pointer;">
-            <input type="radio" name="merge-primary" value="${t.id}" ${Number(t.id) === Number(defaultPrimary.id) ? 'checked' : ''}>
+            <input class="merge-radio" type="radio" name="merge-primary" value="${t.id}" ${Number(t.id) === Number(defaultPrimary.id) ? 'checked' : ''}>
             <span><strong>#${t.id}</strong> · ${escapeHtml(t.mailbox_email || '')}<br><span class="small">${escapeHtml(t.subject || '(no subject)')} · ${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</span>${Number(t.id) === Number(defaultPrimary.id) ? '<br><span class="small">Recommended: oldest ticket</span>' : ''}</span>
           </label>
         `).join('')}

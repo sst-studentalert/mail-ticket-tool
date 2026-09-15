@@ -703,3 +703,97 @@ table.dash td {
 table.dash th {
   color: var(--ink-faint);
 }
+
+/* ================================================================
+   Learner + Parent/Guardian view
+   ================================================================ */
+.learner-profile-card {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+}
+.learner-profile-title {
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--ink);
+}
+.learner-contacts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 10px;
+}
+.learner-contact-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--panel-soft);
+  min-width: 0;
+}
+.contact-role { font-size: 12px; font-weight: 700; color: var(--brand); margin-bottom: 5px; }
+.contact-name { font-weight: 600; color: var(--ink); margin-bottom: 3px; }
+.contact-email { font-size: 12px; color: var(--ink-soft); overflow-wrap:anywhere; }
+.relationship-badge {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:3px 8px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:var(--line-soft);
+  color:var(--ink);
+  font-size:11px;
+  font-weight:700;
+  white-space:nowrap;
+}
+.relationship-badge.learner { color:var(--brand); border-color:var(--brand-line); background:var(--brand-tint); }
+.relationship-badge.father,
+.relationship-badge.mother,
+.relationship-badge.guardian { color:var(--ink); }
+
+/* Larger, easier-to-click selection controls. */
+.merge-check-col { width:42px !important; min-width:42px; text-align:center; }
+input[type="checkbox"].learner-merge-check,
+input[type="checkbox"]#select-all-learner,
+input[type="radio"].merge-radio {
+  width:18px !important;
+  height:18px !important;
+  min-width:18px;
+  min-height:18px;
+  margin:2px 0;
+  padding:0 !important;
+  accent-color:var(--brand);
+  cursor:pointer;
+  vertical-align:middle;
+}
+.learner-merge-check { transform:scale(1.05); }
+
+/* Dark-mode-safe controls: override older light-mode hard-coded values. */
+input, select, textarea, .reply-editor {
+  background:var(--paper) !important;
+  color:var(--ink) !important;
+  border-color:var(--line) !important;
+}
+input::placeholder, textarea::placeholder, .reply-editor:empty::before { color:var(--ink-faint) !important; }
+.rich-toolbar-btn,
+button.secondary {
+  background:var(--line-soft) !important;
+  color:var(--ink) !important;
+  border-color:var(--line) !important;
+}
+.rich-toolbar-btn:hover,
+button.secondary:hover { background:var(--line) !important; }
+.thread-message.inbound { background:var(--line-soft) !important; color:var(--ink) !important; }
+.thread-message.outbound { background:var(--brand-tint) !important; color:var(--ink) !important; border-color:var(--brand-line) !important; }
+.body-box { background:var(--line-soft) !important; color:var(--ink) !important; }
+.modal { background:var(--paper) !important; color:var(--ink) !important; border-color:var(--line) !important; }
+.modal .small, .modal label { color:var(--ink-soft); }
+.modal .info-banner { background:var(--panel-soft) !important; color:var(--ink) !important; border-color:var(--line) !important; }
+
+@media (max-width: 900px) {
+  .learner-contacts { grid-template-columns:repeat(2, minmax(150px, 1fr)); }
+}
+@media (max-width: 600px) {
+  .learner-contacts { grid-template-columns:1fr; }
+}
