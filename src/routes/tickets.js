@@ -89,6 +89,22 @@ function findHeaderIndex(headers, patterns, start = 0) {
   );
 }
 
+function findHeaderIndexes(headers, patterns) {
+  const normalizedPatterns = patterns.map((p) => String(p).toLowerCase());
+  return headers.reduce((out, h, i) => {
+    if (normalizedPatterns.some((p) => h === p || h.includes(p))) out.push(i);
+    return out;
+  }, []);
+}
+
+function firstNonEmptyCell(cells, indexes) {
+  for (const index of indexes || []) {
+    const value = String(cells[index] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
 function csvRows(text) {
   const lines = String(text || '')
     .replace(/^\uFEFF/, '')
@@ -193,10 +209,7 @@ async function loadLearnerMapping() {
   }
 
   try {
-    // ALL learner information is in the Consolidated tab.
-    // The Consolidated tab is populated using IMPORTRANGE.
     const consolidatedText = await fetchGoogleSheetCsvByGid(LEARNER_SHEET_GID);
-
     if (/accounts\.google\.com|sign in to continue|request access|permission denied/i.test(consolidatedText)) {
       throw new Error('Google Sheet is not publicly readable. Share the sheet as Anyone with the link → Viewer.');
     }
@@ -204,45 +217,55 @@ async function loadLearnerMapping() {
     const { headers, rows } = csvRows(consolidatedText);
     if (!headers.length) throw new Error('Consolidated sheet returned no headers.');
 
-    const emailIndex = findHeaderIndex(headers, ['email address', 'sst email']);
-    if (emailIndex < 0) throw new Error('Consolidated sheet must contain Email Address or SST Email.');
+    // The Consolidated tab may contain repeated blocks of the same headers.
+    // Do NOT assume the first matching column contains the value. For every
+    // field, scan ALL matching columns and take the first non-empty value.
+    const emailIndexes = findHeaderIndexes(headers, ['email address', 'sst email']);
+    if (!emailIndexes.length) throw new Error('Consolidated sheet must contain Email Address or SST Email.');
 
-    const nameIndex = findHeaderIndex(headers, ['full name (as per aadhar)', 'student name', 'name']);
-    const studentIdIndex = findHeaderIndex(headers, ['student id', 'student. id', 'student  id']);
-    const fatherNameIndex = findHeaderIndex(headers, ["father's name", 'father name']);
-    const fatherEmailIndex = findHeaderIndex(headers, ["father's email id", 'father email']);
-    const motherNameIndex = findHeaderIndex(headers, ["mother's name", 'mother name']);
-    const motherEmailIndex = findHeaderIndex(headers, ["mother's email id", 'mother email']);
-    const guardianNameIndex = findHeaderIndex(headers, ["local guardian's name", 'guardian name']);
-    const guardianEmailIndex = findHeaderIndex(headers, ["local guardian's email id", 'local guardian email', 'guardian email']);
+    const nameIndexes = findHeaderIndexes(headers, ['full name (as per aadhar)', 'student name', 'name']);
+    const studentIdIndexes = findHeaderIndexes(headers, ['student id', 'student. id', 'student  id']);
+    const fatherNameIndexes = findHeaderIndexes(headers, ["father's name", 'father name']);
+    const fatherEmailIndexes = findHeaderIndexes(headers, ["father's email id", 'father email']);
+    const motherNameIndexes = findHeaderIndexes(headers, ["mother's name", 'mother name']);
+    const motherEmailIndexes = findHeaderIndexes(headers, ["mother's email id", 'mother email']);
+    const guardianNameIndexes = findHeaderIndexes(headers, ["local guardian's name", 'guardian name']);
+    const guardianEmailIndexes = findHeaderIndexes(headers, ["local guardian's email id", 'local guardian email', 'guardian email']);
 
     const mapping = {};
     for (const cells of rows) {
-      const email = normalizeLearnerEmail(cells[emailIndex] || '');
+      const email = normalizeLearnerEmail(firstNonEmptyCell(cells, emailIndexes));
       if (!email) continue;
 
       if (!mapping[email]) mapping[email] = makeEmptyLearnerRecord(email);
       const record = mapping[email];
 
-      const name = nameIndex >= 0 ? String(cells[nameIndex] || '').trim() : '';
+      const name = firstNonEmptyCell(cells, nameIndexes);
       if (name) record.name = name;
 
-      const studentId = studentIdIndex >= 0 ? String(cells[studentIdIndex] || '').trim() : '';
+      const studentId = firstNonEmptyCell(cells, studentIdIndexes);
       if (studentId) record.student_id = studentId;
 
-      addLearnerContact(record, fatherEmailIndex >= 0 ? cells[fatherEmailIndex] : '', 'Father', fatherNameIndex >= 0 ? cells[fatherNameIndex] : '');
-      addLearnerContact(record, motherEmailIndex >= 0 ? cells[motherEmailIndex] : '', 'Mother', motherNameIndex >= 0 ? cells[motherNameIndex] : '');
-      addLearnerContact(record, guardianEmailIndex >= 0 ? cells[guardianEmailIndex] : '', 'Guardian', guardianNameIndex >= 0 ? cells[guardianNameIndex] : '');
+      const fatherName = firstNonEmptyCell(cells, fatherNameIndexes);
+      const fatherEmail = firstNonEmptyCell(cells, fatherEmailIndexes);
+      addLearnerContact(record, fatherEmail, 'Father', fatherName);
+
+      const motherName = firstNonEmptyCell(cells, motherNameIndexes);
+      const motherEmail = firstNonEmptyCell(cells, motherEmailIndexes);
+      addLearnerContact(record, motherEmail, 'Mother', motherName);
+
+      const guardianName = firstNonEmptyCell(cells, guardianNameIndexes);
+      const guardianEmail = firstNonEmptyCell(cells, guardianEmailIndexes);
+      addLearnerContact(record, guardianEmail, 'Guardian', guardianName);
     }
 
     if (!Object.keys(mapping).length) throw new Error('No learner rows were found in Consolidated.');
 
     const contactLookup = buildContactLookup(mapping);
     learnerSheetCache = { loadedAt: now, mapping: contactLookup };
-    console.log(`Loaded ${Object.keys(mapping).length} learner rows from Consolidated.`);
+    console.log(`Loaded ${Object.keys(mapping).length} learner rows from Consolidated with duplicate-column support.`);
     return contactLookup;
   } catch (err) {
-    // Never make /api/tickets wait/fail because the optional learner enrichment fails.
     console.error('Learner Google Sheet lookup failed:', err);
     return learnerSheetCache.mapping || {};
   }

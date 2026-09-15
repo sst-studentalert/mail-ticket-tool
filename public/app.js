@@ -380,6 +380,7 @@ function renderTicketTable() {
         <tr>
           <th>Received</th>
           <th>Mailbox</th>
+          <th>Learner Name</th>
           <th>Learner Email</th>
           <th>Student ID</th>
           <th>Raised</th>
@@ -420,8 +421,9 @@ function rowHtml(t) {
       <td>${fmtDate(t.received_at)}</td>
       <td>${escapeHtml(t.mailbox_email || '')}</td>
       <td>
-        ${t.from_address ? `<a href="#learner?email=${encodeURIComponent(extractEmail(t.from_address) || t.from_address)}" class="learner-link" data-learner-email="${escapeHtml(extractEmail(t.from_address) || t.from_address)}">${escapeHtml(t.from_address)}</a>` : '—'}
+        ${t.learner_name ? `<a href="#learner?email=${encodeURIComponent(t.learner_email || extractEmail(t.from_address) || t.from_address)}" class="learner-link" data-learner-email="${escapeHtml(t.learner_email || extractEmail(t.from_address) || t.from_address)}">${escapeHtml(t.learner_name)}</a>` : 'Unknown learner'}
       </td>
+      <td>${escapeHtml(t.learner_email || extractEmail(t.from_address) || '')}</td>
       <td>${escapeHtml(t.student_id || '—')}</td>
       <td>${t.learner_ticket_count != null ? t.learner_ticket_count : '—'}</td>
       <td>${t.learner_open_count != null ? t.learner_open_count : '—'}</td>
@@ -493,6 +495,19 @@ async function renderLearner() {
         <div class="small">Student ID: <strong>${escapeHtml(data.learner.student_id || 'Not mapped')}</strong></div>
       </div>
 
+      <div class="card" style="margin-top:12px;">
+        <h3 style="margin-top:0;">Registered Contacts</h3>
+        <div class="learner-contacts-grid">
+          ${(data.learner.contacts && data.learner.contacts.length ? data.learner.contacts : [{relationship:'Learner', name:data.learner.name || 'Learner', email:data.learner.email || email}]).map((contact) => `
+            <div class="learner-contact-card">
+              <div class="small">${escapeHtml(contact.relationship || 'Contact')}</div>
+              <strong>${escapeHtml(contact.name || contact.relationship || 'Contact')}</strong>
+              <div class="small">${escapeHtml(contact.email || '')}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
       <div class="tiles" style="margin-top:12px;">
         <div class="tile"><p class="k">Total raised</p><p class="v">${c.total || 0}</p></div>
         <div class="tile"><p class="k">Currently open</p><p class="v">${c.open || 0}</p></div>
@@ -540,11 +555,13 @@ async function renderLearner() {
         ${data.tickets.length ? `
         <div style="overflow:auto;">
           <table class="dash">
-            <thead><tr><th>Received</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
+            <thead><tr><th>Received</th><th>Sender</th><th>Raised By</th><th>Mailbox</th><th>Subject</th><th>Assignee</th><th>Status</th><th>First response</th><th>Resolution</th></tr></thead>
             <tbody>
               ${data.tickets.map((t) => `
                 <tr class="link-row learner-ticket-row" data-id="${t.id}">
                   <td>${escapeHtml(fmtDate(t.first_received_at || t.received_at))}</td>
+                  <td>${escapeHtml(t.from_address || '')}</td>
+                  <td>${escapeHtml(t.sender_relationship || 'Learner')}</td>
                   <td>${escapeHtml(t.mailbox_email || '')}</td>
                   <td>${escapeHtml(t.subject || '(no subject)')}</td>
                   <td>${escapeHtml(t.assignee_name || '—')}</td>
