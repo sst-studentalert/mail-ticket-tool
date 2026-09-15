@@ -505,22 +505,24 @@ async function renderLearner() {
         <div class="small">Student ID: <strong>${escapeHtml(data.learner.student_id || 'Not mapped')}</strong></div>
       </div>
 
-      <div class="learner-family-strip" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px;">
-        <div class="learner-contact-card"><div class="small">Father</div><strong>${escapeHtml(fatherName)}</strong><div class="small">${escapeHtml(data.learner.father_email || fatherContact.email || '')}</div></div>
-        <div class="learner-contact-card"><div class="small">Mother</div><strong>${escapeHtml(motherName)}</strong><div class="small">${escapeHtml(data.learner.mother_email || motherContact.email || '')}</div></div>
-        <div class="learner-contact-card"><div class="small">Local Guardian</div><strong>${escapeHtml(guardianName)}</strong><div class="small">${escapeHtml(data.learner.guardian_email || guardianContact.email || '')}</div></div>
-      </div>
-
-      <div class="card" style="margin-top:12px;">
-        <h3 style="margin-top:0;">Registered Contacts</h3>
-        <div class="learner-contacts-grid">
-          ${(data.learner.contacts && data.learner.contacts.length ? data.learner.contacts : [{relationship:'Learner', name:data.learner.name || 'Learner', email:canonicalLearnerEmail}]).map((contact) => `
-            <div class="learner-contact-card">
-              <div class="small">${escapeHtml(contact.relationship || 'Contact')}</div>
-              <strong>${escapeHtml(contact.name || contact.relationship || 'Contact')}</strong>
-              <div class="small">${escapeHtml(contact.email || '')}</div>
-            </div>
-          `).join('')}
+      <div class="card learner-family-section" style="margin-top:12px;">
+        <div style="font-weight:700;margin-bottom:10px;">Family / Registered Contacts</div>
+        <div class="learner-family-strip" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
+          <div class="learner-contact-card">
+            <div class="small">Father</div>
+            <strong>${escapeHtml(fatherName)}</strong>
+            <div class="small">${escapeHtml(data.learner.father_email || fatherContact.email || '—')}</div>
+          </div>
+          <div class="learner-contact-card">
+            <div class="small">Mother</div>
+            <strong>${escapeHtml(motherName)}</strong>
+            <div class="small">${escapeHtml(data.learner.mother_email || motherContact.email || '—')}</div>
+          </div>
+          <div class="learner-contact-card">
+            <div class="small">Local Guardian</div>
+            <strong>${escapeHtml(guardianName)}</strong>
+            <div class="small">${escapeHtml(data.learner.guardian_email || guardianContact.email || '—')}</div>
+          </div>
         </div>
       </div>
 
