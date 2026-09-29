@@ -452,7 +452,7 @@ async function requireTicketAccess(req, res, ticket) {
 router.get('/', async (req, res, next) => {
   try {
     await mergeTableReady;
-    const { mailbox_id, assignee_id, status, automated, tag, q, learner, from_date, to_date } = req.query;
+    const { mailbox_id, mailboxIds, assignee_id, status, automated, tag, q, learner, from_date, to_date } = req.query;
 
     const clauses = [];
     const params = [];
@@ -509,7 +509,14 @@ router.get('/', async (req, res, next) => {
       }
     }
 
-    if (mailbox_id) {
+    const selectedMailboxIds = String(mailboxIds || '')
+      .split(',')
+      .map((v) => Number(v.trim()))
+      .filter((v) => Number.isInteger(v) && v > 0);
+    if (selectedMailboxIds.length) {
+      clauses.push('t.mailbox_id = ANY(?)');
+      params.push(selectedMailboxIds);
+    } else if (mailbox_id) {
       clauses.push('t.mailbox_id = ?');
       params.push(mailbox_id);
     }
@@ -875,7 +882,9 @@ router.patch('/:id/assign', async (req, res, next) => {
       }
     }
 
-    const newStatus = assignee_id ? 'assigned' : ticket.status === 'assigned' ? 'unassigned' : ticket.status;
+    const newStatus = assignee_id
+      ? (ticket.status === 'reopened' ? 'reopened' : 'assigned')
+      : ticket.status === 'assigned' || ticket.status === 'reopened' ? 'unassigned' : ticket.status;
 
     // assigned_at is a TAT milestone: only ever set on the *first* assignment,
     // so reassigning a ticket later doesn't reset "time to first response".
@@ -913,7 +922,7 @@ router.patch('/:id/status', async (req, res, next) => {
     if (!(await requireTicketAccess(req, res, ticket))) return;
 
     const { status } = req.body || {};
-    const allowed = ['unassigned', 'assigned', 'replied', 'closed'];
+    const allowed = ['unassigned', 'assigned', 'replied', 'reopened', 'closed'];
     if (!allowed.includes(status)) {
       return res.status(400).json({ error: `status must be one of: ${allowed.join(', ')}` });
     }

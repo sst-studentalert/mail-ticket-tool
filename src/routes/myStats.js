@@ -23,7 +23,7 @@ const { resolveMailboxScope } = require('../services/mailboxScope');
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
 
-const STATUSES = ['unassigned', 'assigned', 'replied', 'closed'];
+const STATUSES = ['unassigned', 'assigned', 'replied', 'reopened', 'closed'];
 
 // "First response" = the first actual outbound reply. Assignment is NOT a
 // response, so assigned_at must not be used for FRT.

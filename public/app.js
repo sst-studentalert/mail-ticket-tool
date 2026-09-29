@@ -7,7 +7,7 @@ const state = {
   mailboxes: [],
   roster: [],
   tickets: [],
-  filters: { mailbox_id: '', assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
+  filters: { mailbox_ids: [], assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
   statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, automated: 'all', unit: '#' },
   myStatsFilters: { from_date: '', to_date: '' },
   personId: null,
@@ -270,10 +270,10 @@ async function renderTickets() {
       </div>
       <div>
         <label>Mailbox</label>
-        <select id="f-mailbox">
-          <option value="">All</option>
-          ${state.mailboxes.map((m) => `<option value="${m.id}">${escapeHtml(m.email)}</option>`).join('')}
+        <select id="f-mailbox" multiple size="4" style="min-width:220px;">
+          ${state.mailboxes.map((m) => `<option value="${m.id}" ${state.filters.mailbox_ids.includes(Number(m.id)) ? 'selected' : ''}>${escapeHtml(m.email)}</option>`).join('')}
         </select>
+        <div class="small">Hold Ctrl/Cmd to select multiple mailboxes.</div>
       </div>
       ${isAdmin ? `
       <div>
@@ -292,6 +292,7 @@ async function renderTickets() {
           <option value="unassigned">Unassigned</option>
           <option value="assigned">Assigned</option>
           <option value="replied">Replied</option>
+          <option value="reopened">Reopened</option>
           <option value="closed">Closed</option>
         </select>
       </div>
@@ -336,7 +337,7 @@ async function renderTickets() {
   });
 
   el('clear-ticket-filters').addEventListener('click', () => {
-    el('f-mailbox').value = '';
+    Array.from(el('f-mailbox').options).forEach((o) => { o.selected = false; });
     if (el('f-assignee')) el('f-assignee').value = '';
     el('f-status').value = '';
     el('f-automated').value = '';
@@ -354,7 +355,7 @@ async function renderTickets() {
 function applyFiltersAndReload() {
   const assigneeNode = el('f-assignee');
   state.filters = {
-    mailbox_id: el('f-mailbox').value,
+    mailbox_ids: Array.from(el('f-mailbox').selectedOptions).map((o) => Number(o.value)),
     assignee_id: assigneeNode ? assigneeNode.value : '',
     status: el('f-status').value,
     automated: el('f-automated').value,
@@ -372,8 +373,16 @@ async function loadTickets() {
 
   try {
     const params = new URLSearchParams();
-    Object.entries(state.filters).forEach(([k, v]) => { if (v) params.set(k, v); });
-    const { tickets } = await api(`/tickets?${params.toString()}`);
+    Object.entries(state.filters).forEach(([k, v]) => {
+    if (Array.isArray(v)) { if (v.length) params.set(k, v.join(',')); }
+    else if (v) params.set(k, v);
+  });
+    if (state.filters.mailbox_ids && state.filters.mailbox_ids.length) {
+    params.set('mailboxIds', state.filters.mailbox_ids.join(','));
+  } else {
+    params.delete('mailbox_ids');
+  }
+  const { tickets } = await api(`/tickets?${params.toString()}`);
     state.tickets = tickets || [];
     renderTicketTable();
   } catch (err) {
@@ -470,6 +479,7 @@ function learnerStatusLabel(status) {
     unassigned: 'Unassigned',
     assigned: 'First response pending',
     replied: 'Open',
+    reopened: 'Reopened',
     closed: 'Closed',
   })[status] || status;
 }
@@ -554,7 +564,7 @@ async function renderLearner() {
       <div class="stats-grid">
         <div class="card stat-card">
           <h3>Tickets by status</h3>
-          ${['unassigned','assigned','replied','closed'].map((key) => `
+          ${['unassigned','assigned','replied','reopened','closed'].map((key) => `
             <div class="stat-row">
               <span>${learnerStatusLabel(key)}</span>
               <strong>${status[key] || 0}</strong>
@@ -1073,7 +1083,7 @@ async function openTicket(id) {
           <div class="side-field">
             <label>Status</label>
             <select id="status-select">
-              ${['unassigned', 'assigned', 'replied', 'closed'].map((s) => `<option value="${s}" ${s === ticket.status ? 'selected' : ''}>${s}</option>`).join('')}
+              ${['unassigned', 'assigned', 'replied', 'reopened', 'closed'].map((s) => `<option value="${s}" ${s === ticket.status ? 'selected' : ''}>${s}</option>`).join('')}
             </select>
           </div>
           <div class="side-field">
@@ -1613,9 +1623,9 @@ async function renderStatsData() {
   const people = data.per_assignee.filter((p) => p.counts.total > 0);
   const maxTotal = people.reduce((m, p) => Math.max(m, p.counts.total), 0);
   const teamTotals = people.reduce((acc, p) => {
-    ['assigned', 'replied', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k]; });
+    ['assigned', 'replied', 'reopened', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k] || 0; });
     return acc;
-  }, { assigned: 0, replied: 0, closed: 0, total: 0 });
+  }, { assigned: 0, replied: 0, reopened: 0, closed: 0, total: 0 });
 
   // Top tiles are status totals. Include the unassigned bucket for replied/closed,
   // while keeping the per-person table based only on assigned people.
@@ -1642,6 +1652,7 @@ async function renderStatsData() {
       <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.unassigned}</p></div>
       <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
       <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + data.unassigned.replied}</p></div>
+      <div class="tile"><p class="k">Reopened</p><p class="v">${teamTotals.reopened + (data.unassigned.reopened || 0)}</p></div>
       <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed + data.unassigned.closed}</p></div>
       <div class="tile"><p class="k">Team SLA</p><p class="v">${data.sla && data.sla.percent != null ? `${data.sla.percent}%` : '—'}</p><p class="c">${data.sla ? `${data.sla.met}/${data.sla.total} met` : ''}</p></div>
     </div>
@@ -1651,7 +1662,7 @@ async function renderStatsData() {
     <div class="dash-card">
       <table class="dash">
         <thead><tr>
-          <th>Person</th><th>Assigned</th><th>Replied</th><th>Closed</th>
+          <th>Person</th><th>Assigned</th><th>Replied</th><th>Reopened</th><th>Closed</th>
           <th>Total</th><th>SLA</th><th>1st response</th><th>Resolution</th>
         </tr></thead>
         <tbody>
@@ -1665,6 +1676,7 @@ async function renderStatsData() {
               </td>
               <td>${cell(p.counts.assigned, p.counts.total)}</td>
               <td>${cell(p.counts.replied, p.counts.total)}</td>
+              <td>${cell(p.counts.reopened || 0, p.counts.total)}</td>
               <td>${cell(p.counts.closed, p.counts.total)}</td>
               <td class="strong">
                 ${p.counts.total}
@@ -1679,6 +1691,7 @@ async function renderStatsData() {
           <td><span class="who"><span class="avatar blank"></span><span>Team total</span></span></td>
           <td>${cell(teamTotals.assigned, teamTotals.total)}</td>
           <td>${cell(teamTotals.replied, teamTotals.total)}</td>
+          <td>${cell(teamTotals.reopened, teamTotals.total)}</td>
           <td>${cell(teamTotals.closed, teamTotals.total)}</td>
           <td>${teamTotals.total}</td>
           ${slaCell(data.sla)}
@@ -1803,6 +1816,7 @@ async function renderPersonData() {
     <div class="tiles">
       <div class="tile"><p class="k">Open now</p><p class="v">${d.totals.open}</p>
         <p class="c${worse(d.totals.open, d.team_avg.open, true)}">team avg ${d.team_avg.open}</p></div>
+      <div class="tile"><p class="k">Reopened</p><p class="v">${d.totals.reopened || 0}</p></div>
       <div class="tile"><p class="k">Closed</p><p class="v">${d.totals.closed}</p>
         <p class="c">team avg ${d.team_avg.closed}</p></div>
       <div class="tile"><p class="k">1st response</p><p class="v">${d.totals.first_response.avg_human || '—'}</p>
@@ -1814,14 +1828,14 @@ async function renderPersonData() {
     <div class="dash-card">
       <table class="dash">
         <thead><tr>
-          <th>${bucketLabel}</th><th>Received</th><th>Replied</th><th>Closed</th>
+          <th>${bucketLabel}</th><th>Received</th><th>Replied</th><th>Reopened</th><th>Closed</th>
           <th>1st response</th><th>Resolution</th>
         </tr></thead>
         <tbody>
           ${d.periods.length ? d.periods.slice().reverse().map((r) => `
             <tr>
               <td>${r.bucket}</td>
-              <td>${r.received}</td><td>${r.replied}</td><td>${r.closed}</td>
+              <td>${r.received}</td><td>${r.replied}</td><td>${r.reopened || 0}</td><td>${r.closed}</td>
               <td>${r.first_response_human || '—'}</td>
               <td>${r.resolution_human || '—'}</td>
             </tr>`).join('')

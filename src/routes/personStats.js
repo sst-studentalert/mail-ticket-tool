@@ -99,9 +99,11 @@ router.get('/:id', async (req, res, next) => {
       .get();
     const headcount = Math.max(memberCount.c, 1);
 
-    const openMine = await countFor(MINE, [memberId], "AND status IN ('assigned','unassigned')", []);
+    const openMine = await countFor(MINE, [memberId], "AND status IN ('assigned','unassigned','reopened')", []);
+    const reopenedMine = await countFor(MINE, [memberId], "AND status = 'reopened'", []);
     const closedMine = await countFor(MINE, [memberId], "AND status = 'closed'", []);
-    const openAll = await countFor(ANYONE, [], "AND status IN ('assigned','unassigned')", []);
+    const openAll = await countFor(ANYONE, [], "AND status IN ('assigned','unassigned','reopened')", []);
+    const reopenedAll = await countFor(ANYONE, [], "AND status = 'reopened'", []);
     const closedAll = await countFor(ANYONE, [], "AND status = 'closed'", []);
 
     // Overdue = never answered, not closed, waiting past the threshold.
@@ -118,6 +120,7 @@ router.get('/:id', async (req, res, next) => {
 
     const totals = {
       open: openMine,
+      reopened: reopenedMine,
       closed: closedMine,
       overdue: overdueMine,
       first_response: await tatFor(FIRST_RESPONSE_EXPR, MINE, [memberId]),
@@ -126,6 +129,7 @@ router.get('/:id', async (req, res, next) => {
 
     const teamAvg = {
       open: Math.round(openAll / headcount),
+      reopened: Math.round(reopenedAll / headcount),
       closed: Math.round(closedAll / headcount),
       overdue: Math.round(overdueAll / headcount),
       first_response: await tatFor(FIRST_RESPONSE_EXPR, ANYONE, []),
@@ -138,6 +142,7 @@ router.get('/:id', async (req, res, next) => {
         `SELECT date_trunc('${group}', first_received_at)::date AS bucket,
                 COUNT(*) AS received,
                 SUM(CASE WHEN first_replied_at IS NOT NULL THEN 1 ELSE 0 END) AS replied,
+                SUM(CASE WHEN status = 'reopened' THEN 1 ELSE 0 END) AS reopened,
                 SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed,
                 AVG(EXTRACT(EPOCH FROM (${FIRST_RESPONSE_EXPR} - first_received_at)))
                   FILTER (WHERE ${FIRST_RESPONSE_EXPR} IS NOT NULL) AS fr_avg_seconds,
@@ -154,6 +159,7 @@ router.get('/:id', async (req, res, next) => {
       bucket: r.bucket instanceof Date ? r.bucket.toISOString().slice(0, 10) : r.bucket,
       received: r.received,
       replied: r.replied,
+      reopened: r.reopened,
       closed: r.closed,
       first_response_avg_seconds: r.fr_avg_seconds == null ? null : Number(r.fr_avg_seconds),
       first_response_human: fmtDuration(r.fr_avg_seconds == null ? null : Number(r.fr_avg_seconds)),

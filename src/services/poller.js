@@ -101,6 +101,44 @@ async function findTicketByThreadLink(mailboxId, threadId) {
     .get(mailboxId, threadId);
 }
 
+// Returns the most recent assignee recorded in the ticket event history.
+// This is used when a closed/replied ticket has been manually unassigned
+// after it was handled: reopening should still return it to the last person
+// who actually owned it, when that person still exists and can access the
+// mailbox.
+async function findLastAssigneeId(ticketId, mailboxId) {
+  const row = await db
+    .prepare(
+      `SELECT detail FROM ticket_events
+       WHERE ticket_id = ?
+         AND event_type = 'assign'
+         AND detail LIKE 'Assigned to member #%'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`
+    )
+    .get(ticketId);
+
+  if (!row || !row.detail) return null;
+  const match = String(row.detail).match(/Assigned to member #(\d+)/);
+  if (!match) return null;
+  const assigneeId = Number(match[1]);
+  if (!Number.isInteger(assigneeId) || assigneeId <= 0) return null;
+
+  const member = await db
+    .prepare(
+      `SELECT tm.id
+       FROM team_members tm
+       WHERE tm.id = ?
+         AND (
+           NOT EXISTS (SELECT 1 FROM mailbox_access ma0 WHERE ma0.team_member_id = tm.id)
+           OR EXISTS (SELECT 1 FROM mailbox_access ma WHERE ma.team_member_id = tm.id AND ma.mailbox_id = ?)
+         )`
+    )
+    .get(assigneeId, mailboxId);
+
+  return member ? member.id : null;
+}
+
 // Pulls bare email addresses out of a raw To/Cc header value (which can look
 // like `"Name" <a@x.com>, b@y.com, "Other" <c@z.com>`).
 function extractEmails(headerValue) {
@@ -217,21 +255,24 @@ async function createTicketFromMessage(mailbox, message) {
     // If the ticket was already sitting in an actionable state (unassigned/
     // assigned), leave status as-is - it's still someone's job to handle it,
     // this new message is just more context. If it had been marked
-    // replied/closed, a new inbound message means it needs attention again,
-    // so reopen it back to assigned (kept with its existing assignee) or
-    // unassigned if nobody's on it.
+    // replied/closed, a new inbound message means it needs attention again.
+    // Keep the current assignee when there is one; otherwise restore the
+    // most recent assignee recorded in ticket_events when that person still
+    // exists and has access to this mailbox.
     const reopening = ['replied', 'closed'].includes(existingThreadTicket.status);
+    let restoredAssigneeId = existingThreadTicket.assignee_id || null;
+    if (reopening && !restoredAssigneeId) {
+      restoredAssigneeId = await findLastAssigneeId(existingThreadTicket.id, mailbox.id);
+    }
     const newStatus = reopening
-      ? existingThreadTicket.assignee_id
-        ? 'assigned'
-        : 'unassigned'
+      ? 'reopened'
       : existingThreadTicket.status;
 
     await db
       .prepare(
         `UPDATE tickets SET
            gmail_message_id = ?, message_id_header = ?, from_address = ?, subject = ?,
-           snippet = ?, body = ?, received_at = ?, status = ?,
+           snippet = ?, body = ?, received_at = ?, status = ?, assignee_id = ?,
            is_automated = ?, automated_reason = ?, automated_source = 'auto',
            updated_at = datetime('now')
          WHERE id = ?`
@@ -245,6 +286,7 @@ async function createTicketFromMessage(mailbox, message) {
         message.bodyText,
         message.receivedAt,
         newStatus,
+        restoredAssigneeId,
         isAutomated ? 1 : 0,
         reasons.length ? reasons.join('; ') : null,
         existingThreadTicket.id
@@ -253,7 +295,9 @@ async function createTicketFromMessage(mailbox, message) {
     await logEvent(
       existingThreadTicket.id,
       reopening ? 'thread_reopened' : 'thread_new_message',
-      `New message in thread (${message.providerMessageId})`
+      reopening
+        ? `Ticket reopened by inbound reply (${message.providerMessageId})${restoredAssigneeId ? ` and restored to member #${restoredAssigneeId}` : ''}`
+        : `New message in thread (${message.providerMessageId})`
     );
 
     await recordMessage(existingThreadTicket.id, {
