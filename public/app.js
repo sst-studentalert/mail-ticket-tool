@@ -1703,7 +1703,7 @@ async function renderStatsData() {
   const teamTotals = people.reduce((acc, p) => {
     ['assigned', 'replied', 'reopened', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k] || 0; });
     return acc;
-  }, { assigned: 0, replied: 0, closed: 0, total: 0 });
+  }, { assigned: 0, replied: 0, reopened: 0, closed: 0, total: 0 });
 
   // Top tiles are status totals. Include the unassigned bucket for replied/closed,
   // while keeping the per-person table based only on assigned people.
