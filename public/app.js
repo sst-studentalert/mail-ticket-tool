@@ -7,7 +7,7 @@ const state = {
   mailboxes: [],
   roster: [],
   tickets: [],
-  filters: { mailbox_ids: null, assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
+  filters: { mailbox_ids: null, mailbox_id: '', assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
   statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, automated: 'all', unit: '#' },
   myStatsFilters: { from_date: '', to_date: '' },
   personId: null,
@@ -270,7 +270,7 @@ async function renderTickets() {
       </div>
       <div>
         <label>Mailbox</label>
-        <div id="f-mailbox-picker" style="position:relative;"></div>
+        <div id="ticket-mailbox-picker"></div>
       </div>
       ${isAdmin ? `
       <div>
@@ -289,6 +289,7 @@ async function renderTickets() {
           <option value="unassigned">Unassigned</option>
           <option value="assigned">Assigned</option>
           <option value="replied">Replied</option>
+          <option value="reopened">Reopened</option>
           <option value="closed">Closed</option>
         </select>
       </div>
@@ -324,6 +325,7 @@ async function renderTickets() {
     const node = el(id);
     if (node) node.addEventListener('change', applyFiltersAndReload);
   });
+
   renderTicketMailboxPicker();
   let debounce;
   ['f-tag', 'f-q'].forEach((id) => {
@@ -349,74 +351,10 @@ async function renderTickets() {
   await loadTickets();
 }
 
-function renderTicketMailboxPicker() {
-  const box = el('f-mailbox-picker');
-  if (!box) return;
-  const opts = state.mailboxes || [];
-  const selected = state.filters.mailbox_ids === null
-    ? opts.map((m) => m.id)
-    : state.filters.mailbox_ids;
-  const allSelected = opts.length > 0 && selected.length === opts.length;
-
-  box.innerHTML = `
-    <div style="position:relative;">
-      <button type="button" class="filter-btn ${allSelected ? '' : 'active'}" id="f-mailbox-btn">
-        ${allSelected ? 'All mailboxes' : `${selected.length} mailbox${selected.length === 1 ? '' : 'es'} selected`} ▾
-      </button>
-      <div class="filter-pop" id="f-mailbox-pop" style="display:none;min-width:300px;max-height:360px;overflow:auto;z-index:30;">
-        <div class="quick">
-          <a data-ticket-mailbox-all="1">Select all</a>
-          <a data-ticket-mailbox-none="1">Clear all</a>
-        </div>
-        ${opts.map((m) => `
-          <label class="opt">
-            <input type="checkbox" data-ticket-mailbox-id="${m.id}" ${selected.includes(m.id) ? 'checked' : ''} />
-            <span>${escapeHtml(m.email)}</span>
-          </label>
-        `).join('')}
-      </div>
-    </div>`;
-
-  const btn = el('f-mailbox-btn');
-  const pop = el('f-mailbox-pop');
-  const current = () => Array.from(pop.querySelectorAll('input[data-ticket-mailbox-id]'))
-    .filter((x) => x.checked)
-    .map((x) => Number(x.dataset.ticketMailboxId));
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const open = pop.style.display !== 'none';
-    document.querySelectorAll('.filter-pop').forEach((p) => {
-      if (p !== pop) p.style.display = 'none';
-    });
-    pop.style.display = open ? 'none' : 'block';
-  });
-  pop.addEventListener('click', (e) => e.stopPropagation());
-
-  const applyMailboxSelection = (ids) => {
-    state.filters.mailbox_ids = ids.length === opts.length ? null : ids;
-    applyFiltersAndReload();
-  };
-
-  pop.querySelectorAll('input[data-ticket-mailbox-id]').forEach((cb) => {
-    cb.addEventListener('change', () => applyMailboxSelection(current()));
-  });
-  pop.querySelector('[data-ticket-mailbox-all]').addEventListener('click', () => applyMailboxSelection(opts.map((m) => m.id)));
-  pop.querySelector('[data-ticket-mailbox-none]').addEventListener('click', () => applyMailboxSelection([]));
-
-  if (!renderTicketMailboxPicker._wired) {
-    renderTicketMailboxPicker._wired = true;
-    document.addEventListener('click', () => {
-      const p = el('f-mailbox-pop');
-      if (p) p.style.display = 'none';
-    });
-  }
-}
-
 function applyFiltersAndReload() {
   const assigneeNode = el('f-assignee');
   state.filters = {
-    mailbox_ids: state.filters.mailbox_ids,
+    ...state.filters,
     assignee_id: assigneeNode ? assigneeNode.value : '',
     status: el('f-status').value,
     automated: el('f-automated').value,
@@ -428,6 +366,83 @@ function applyFiltersAndReload() {
   loadTickets();
 }
 
+
+function renderTicketMailboxPicker() {
+  const box = el('ticket-mailbox-picker');
+  if (!box) return;
+
+  const selected = state.filters.mailbox_ids;
+  const allSelected = selected === null || selected.length === state.mailboxes.length;
+  const selectedCount = selected === null ? state.mailboxes.length : selected.length;
+
+  box.innerHTML = `
+    <div style="position:relative;">
+      <button type="button" class="filter-btn" id="ticket-mailbox-picker-btn"
+              style="width:100%;text-align:left;display:flex;align-items:center;justify-content:space-between;">
+        <span>${allSelected ? 'All mailboxes' : `${selectedCount} mailbox${selectedCount === 1 ? '' : 'es'} selected`}</span>
+        <span>▾</span>
+      </button>
+      <div id="ticket-mailbox-picker-pop"
+           style="display:none;position:absolute;z-index:50;left:0;right:0;top:calc(100% + 6px);background:var(--paper,#fff);border:1px solid var(--line,#ddd);border-radius:8px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.2);max-height:320px;overflow:auto;">
+        <div style="display:flex;justify-content:space-between;gap:8px;padding:4px 4px 8px;border-bottom:1px solid var(--line,#ddd);margin-bottom:6px;">
+          <button type="button" class="secondary" id="ticket-mailbox-select-all" style="font-size:12px;">Select all</button>
+          <button type="button" class="secondary" id="ticket-mailbox-clear-all" style="font-size:12px;">Clear all</button>
+        </div>
+        ${state.mailboxes.map((m) => {
+          const checked = selected === null || selected.includes(Number(m.id));
+          return `
+            <label style="display:flex;align-items:center;gap:8px;padding:7px 4px;margin:0;cursor:pointer;">
+              <input type="checkbox" class="ticket-mailbox-checkbox" value="${m.id}" ${checked ? 'checked' : ''} style="width:auto;margin:0;" />
+              <span>${escapeHtml(m.email)}</span>
+            </label>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+
+  const btn = el('ticket-mailbox-picker-btn');
+  const pop = el('ticket-mailbox-picker-pop');
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    pop.style.display = pop.style.display === 'none' ? 'block' : 'none';
+  });
+  pop.addEventListener('click', (e) => e.stopPropagation());
+
+  const reloadWithSelection = () => {
+    const ids = Array.from(pop.querySelectorAll('.ticket-mailbox-checkbox:checked'))
+      .map((cb) => Number(cb.value));
+    state.filters.mailbox_ids = ids.length === state.mailboxes.length ? null : ids;
+    loadTickets();
+    renderTicketMailboxPicker();
+  };
+
+  pop.querySelectorAll('.ticket-mailbox-checkbox').forEach((cb) => {
+    cb.addEventListener('change', reloadWithSelection);
+  });
+
+  el('ticket-mailbox-select-all').addEventListener('click', () => {
+    state.filters.mailbox_ids = null;
+    loadTickets();
+    renderTicketMailboxPicker();
+  });
+
+  el('ticket-mailbox-clear-all').addEventListener('click', () => {
+    state.filters.mailbox_ids = [];
+    loadTickets();
+    renderTicketMailboxPicker();
+  });
+
+  if (!renderTicketMailboxPicker._wired) {
+    renderTicketMailboxPicker._wired = true;
+    document.addEventListener('click', (e) => {
+      const current = document.getElementById('ticket-mailbox-picker-pop');
+      const container = document.getElementById('ticket-mailbox-picker');
+      if (current && container && !container.contains(e.target)) current.style.display = 'none';
+    });
+  }
+}
+
 async function loadTickets() {
   const wrap = el('ticket-table-wrap');
   if (wrap) wrap.innerHTML = '<em>Loading tickets...</em>';
@@ -435,12 +450,12 @@ async function loadTickets() {
   try {
     const params = new URLSearchParams();
     Object.entries(state.filters).forEach(([k, v]) => {
-      if (k === 'mailbox_ids') {
-        if (Array.isArray(v) && v.length) params.set('mailboxIds', v.join(','));
-        return;
-      }
+      if (k === 'mailbox_ids') return;
       if (v) params.set(k, v);
     });
+    if (state.filters.mailbox_ids !== null) {
+      params.set('mailboxIds', state.filters.mailbox_ids.join(','));
+    }
     const { tickets } = await api(`/tickets?${params.toString()}`);
     state.tickets = tickets || [];
     renderTicketTable();
@@ -516,7 +531,7 @@ function rowHtml(t) {
         ${t.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </td>
       <td>${escapeHtml(t.assignee_name || '—')}</td>
-      <td><span class="badge ${t.status}">${t.status}</span></td>
+      <td><span class="badge ${t.status}">${t.status === 'reopened' ? 'Reopened' : t.status}</span></td>
       <td>${tatCell(t)}</td>
       <td>${t.tags.map((tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')}</td>
     </tr>
@@ -538,6 +553,7 @@ function learnerStatusLabel(status) {
     unassigned: 'Unassigned',
     assigned: 'First response pending',
     replied: 'Open',
+    reopened: 'Reopened',
     closed: 'Closed',
   })[status] || status;
 }
@@ -1545,24 +1561,23 @@ function resolvedRange() {
     return { from: f.from_date, to: f.to_date, group: RANGES.custom.group };
   }
 
-  const today = localIsoDate(new Date());
-
   if (f.preset === 'today') {
-    // Inclusive local-calendar-day range. Using both from_date and to_date
-    // prevents the server's timezone/date casting from turning Today into
-    // yesterday or including records outside the selected day.
+    const today = localIsoDate(new Date());
     return { from: today, to: today, group: RANGES.today.group };
   }
 
   if (f.preset === 'week') {
+    const today = localIsoDate(new Date());
     return { from: startOfWeekIso(), to: today, group: RANGES.week.group };
   }
 
   if (f.preset === 'month') {
+    const today = localIsoDate(new Date());
     return { from: startOfMonthIso(), to: today, group: RANGES.month.group };
   }
 
   if (f.preset === 'quarter') {
+    const today = localIsoDate(new Date());
     return { from: startOfQuarterIso(), to: today, group: RANGES.quarter.group };
   }
 
@@ -1686,7 +1701,7 @@ async function renderStatsData() {
   const people = data.per_assignee.filter((p) => p.counts.total > 0);
   const maxTotal = people.reduce((m, p) => Math.max(m, p.counts.total), 0);
   const teamTotals = people.reduce((acc, p) => {
-    ['assigned', 'replied', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k]; });
+    ['assigned', 'replied', 'reopened', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k] || 0; });
     return acc;
   }, { assigned: 0, replied: 0, closed: 0, total: 0 });
 
@@ -1714,7 +1729,7 @@ async function renderStatsData() {
       ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>` : ''}
       <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.unassigned}</p></div>
       <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
-      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + data.unassigned.replied}</p></div>
+      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + teamTotals.reopened + data.unassigned.replied + data.unassigned.reopened}</p></div>
       <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed + data.unassigned.closed}</p></div>
       <div class="tile"><p class="k">Team SLA</p><p class="v">${data.sla && data.sla.percent != null ? `${data.sla.percent}%` : '—'}</p><p class="c">${data.sla ? `${data.sla.met}/${data.sla.total} met` : ''}</p></div>
     </div>
@@ -1724,7 +1739,7 @@ async function renderStatsData() {
     <div class="dash-card">
       <table class="dash">
         <thead><tr>
-          <th>Person</th><th>Assigned</th><th>Replied</th><th>Closed</th>
+          <th>Person</th><th>Assigned</th><th>Replied</th><th>Reopened</th><th>Closed</th>
           <th>Total</th><th>SLA</th><th>1st response</th><th>Resolution</th>
         </tr></thead>
         <tbody>
@@ -1738,6 +1753,7 @@ async function renderStatsData() {
               </td>
               <td>${cell(p.counts.assigned, p.counts.total)}</td>
               <td>${cell(p.counts.replied, p.counts.total)}</td>
+              <td>${cell(p.counts.reopened || 0, p.counts.total)}</td>
               <td>${cell(p.counts.closed, p.counts.total)}</td>
               <td class="strong">
                 ${p.counts.total}
@@ -1752,6 +1768,7 @@ async function renderStatsData() {
           <td><span class="who"><span class="avatar blank"></span><span>Team total</span></span></td>
           <td>${cell(teamTotals.assigned, teamTotals.total)}</td>
           <td>${cell(teamTotals.replied, teamTotals.total)}</td>
+          <td>${cell(teamTotals.reopened || 0, teamTotals.total)}</td>
           <td>${cell(teamTotals.closed, teamTotals.total)}</td>
           <td>${teamTotals.total}</td>
           ${slaCell(data.sla)}
@@ -1863,7 +1880,7 @@ async function renderPersonData() {
               <tr class="overdue">
                 <td>${escapeHtml(t.subject || '(no subject)')}</td>
                 <td>${escapeHtml(t.mailbox.split('@')[0])}</td>
-                <td><span class="badge ${t.status}">${t.status}</span></td>
+                <td><span class="badge ${t.status}">${t.status === 'reopened' ? 'Reopened' : t.status}</span></td>
                 <td class="alert">${t.waiting_hours >= 48
                   ? `${Math.round(t.waiting_hours / 24)}d` : `${t.waiting_hours}h`}</td>
               </tr>`).join('')}
