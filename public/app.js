@@ -1701,9 +1701,15 @@ async function renderStatsData() {
   const people = data.per_assignee.filter((p) => p.counts.total > 0);
   const maxTotal = people.reduce((m, p) => Math.max(m, p.counts.total), 0);
   const teamTotals = people.reduce((acc, p) => {
-    ['assigned', 'replied', 'reopened', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k] || 0; });
+    ['assigned', 'replied', 'reopened', 'closed', 'total'].forEach((k) => { acc[k] += Number(p.counts[k] || 0); });
     return acc;
   }, { assigned: 0, replied: 0, reopened: 0, closed: 0, total: 0 });
+
+  // Team total must reconcile to Received. Unassigned tickets are not people,
+  // so keep them separate in the API but include them in the dashboard total.
+  const unassignedTotal = Number(data.unassigned && data.unassigned.total || 0);
+  const overallTotal = teamTotals.total + unassignedTotal;
+  const unassignedUnassigned = Number(data.unassigned && data.unassigned.unassigned || 0);
 
   // Top tiles are status totals. Include the unassigned bucket for replied/closed,
   // while keeping the per-person table based only on assigned people.
@@ -1726,7 +1732,7 @@ async function renderStatsData() {
     ${rangeRowHtml('s')}
 
     <div class="tiles">
-      ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>` : ''}
+      ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${overallTotal}</p></div>` : ''}
       <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.unassigned}</p></div>
       <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
       <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + teamTotals.reopened + (data.unassigned.replied || 0) + (data.unassigned.reopened || 0)}</p></div>
@@ -1739,7 +1745,7 @@ async function renderStatsData() {
     <div class="dash-card">
       <table class="dash">
         <thead><tr>
-          <th>Person</th><th>Assigned</th><th>Replied</th><th>Reopened</th><th>Closed</th>
+          <th>Person</th><th>Unassigned</th><th>Assigned</th><th>Replied</th><th>Reopened</th><th>Closed</th>
           <th>Total</th><th>SLA</th><th>1st response</th><th>Resolution</th>
         </tr></thead>
         <tbody>
@@ -1751,6 +1757,7 @@ async function renderStatsData() {
                   <span>${escapeHtml(p.member.name)}</span>
                 </span>
               </td>
+              <td>—</td>
               <td>${cell(p.counts.assigned, p.counts.total)}</td>
               <td>${cell(p.counts.replied, p.counts.total)}</td>
               <td>${cell(p.counts.reopened || 0, p.counts.total)}</td>
@@ -1766,11 +1773,12 @@ async function renderStatsData() {
         </tbody>
         <tfoot><tr>
           <td><span class="who"><span class="avatar blank"></span><span>Team total</span></span></td>
-          <td>${cell(teamTotals.assigned, teamTotals.total)}</td>
-          <td>${cell(teamTotals.replied, teamTotals.total)}</td>
-          <td>${cell(teamTotals.reopened || 0, teamTotals.total)}</td>
-          <td>${cell(teamTotals.closed, teamTotals.total)}</td>
-          <td>${teamTotals.total}</td>
+          <td>${unassignedUnassigned}</td>
+          <td>${cell(teamTotals.assigned, overallTotal)}</td>
+          <td>${cell(teamTotals.replied + Number(data.unassigned.replied || 0), overallTotal)}</td>
+          <td>${cell(teamTotals.reopened + Number(data.unassigned.reopened || 0), overallTotal)}</td>
+          <td>${cell(teamTotals.closed + Number(data.unassigned.closed || 0), overallTotal)}</td>
+          <td>${overallTotal}</td>
           ${slaCell(data.sla)}
           <td>${data.tat.first_response.avg_human || '—'}</td>
           <td>${data.tat.resolution.avg_human || '—'}</td>

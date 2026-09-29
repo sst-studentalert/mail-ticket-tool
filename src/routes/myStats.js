@@ -71,16 +71,18 @@ router.get('/', async (req, res, next) => {
   try {
     const { from_date, to_date } = req.query;
 
-    // Shared date-range clause + params, appended to every query below.
-    // Postgres has no date() function like SQLite - cast with ::date.
+    // Shared Dashboard date-range clause + params.
+    // Dashboard presets mean tickets RECEIVED during the selected calendar period.
+    // Use received_at for the period filter; SLA/TAT still use first_received_at.
+    // Convert TIMESTAMPTZ to India local calendar date so Today matches IST, not UTC.
     const dateClauses = [];
     const dateParams = [];
     if (from_date) {
-      dateClauses.push('first_received_at::date >= ?::date');
+      dateClauses.push("(received_at AT TIME ZONE 'Asia/Kolkata')::date >= ?::date");
       dateParams.push(from_date);
     }
     if (to_date) {
-      dateClauses.push('first_received_at::date <= ?::date');
+      dateClauses.push("(received_at AT TIME ZONE 'Asia/Kolkata')::date <= ?::date");
       dateParams.push(to_date);
     }
     const dateSql = dateClauses.length ? `AND ${dateClauses.join(' AND ')}` : '';
