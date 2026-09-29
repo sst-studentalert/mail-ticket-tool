@@ -1729,7 +1729,7 @@ async function renderStatsData() {
       ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>` : ''}
       <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.unassigned}</p></div>
       <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
-      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + teamTotals.reopened + data.unassigned.replied + data.unassigned.reopened}</p></div>
+      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + teamTotals.reopened + (data.unassigned.replied || 0) + (data.unassigned.reopened || 0)}</p></div>
       <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed + data.unassigned.closed}</p></div>
       <div class="tile"><p class="k">Team SLA</p><p class="v">${data.sla && data.sla.percent != null ? `${data.sla.percent}%` : '—'}</p><p class="c">${data.sla ? `${data.sla.met}/${data.sla.total} met` : ''}</p></div>
     </div>
