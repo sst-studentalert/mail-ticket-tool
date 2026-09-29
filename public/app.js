@@ -8,7 +8,7 @@ const state = {
   roster: [],
   tickets: [],
   filters: { mailbox_id: '', assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
-  statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, unit: '#' },
+  statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, automated: 'all', unit: '#' },
   myStatsFilters: { from_date: '', to_date: '' },
   personId: null,
   showOverdue: false,
@@ -1416,29 +1416,52 @@ async function renderOfficeHours() {
 // stays as it is.
 //
 // Also change the statsFilters line near the top of the file to:
-//   statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, unit: '#' },
+//   statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, automated: 'all', unit: '#' },
 // ===================================================================
 
 // Presets set the range AND the grouping together, so the period table
 // never ends up with 400 rows or 1. Ranges are computed client-side; the
 // server only ever sees plain from_date/to_date.
 const RANGES = {
-  current: { label: 'Current', days: null, group: 'day' },
-  week: { label: 'This week', days: 7, group: 'day' },
-  month: { label: 'This month', days: 30, group: 'week' },
-  quarter: { label: 'This quarter', days: 90, group: 'week' },
-  custom: { label: 'Custom', days: null, group: 'week' },
+  current: { label: 'Current', group: 'day' },
+  today: { label: 'Today', group: 'day' },
+  week: { label: 'This week', group: 'day' },
+  month: { label: 'This month', group: 'week' },
+  quarter: { label: 'This quarter', group: 'week' },
+  custom: { label: 'Custom', group: 'week' },
 };
 
-// SLA targets, in wall-clock hours. Drive the SLA calculation and TAT dots.
-// Move to app_settings when different mailboxes need different numbers.
-const FIRST_REPLY_TARGET_H = 24;
+// SLA is ONLY the 72-hour resolution target. First response is displayed
+// separately as an informational TAT and is not part of SLA.
 const RESOLUTION_TARGET_H = 72;
 
-function isoDaysAgo(n) {
+function localIsoDate(date) {
+  const d = new Date(date);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function startOfWeekIso() {
   const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
+  d.setHours(0, 0, 0, 0);
+  const day = d.getDay();
+  const daysFromMonday = day === 0 ? 6 : day - 1;
+  d.setDate(d.getDate() - daysFromMonday);
+  return localIsoDate(d);
+}
+
+function startOfMonthIso() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(1);
+  return localIsoDate(d);
+}
+
+function startOfQuarterIso() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setMonth(Math.floor(d.getMonth() / 3) * 3, 1);
+  return localIsoDate(d);
 }
 
 function resolvedRange() {
@@ -1454,8 +1477,23 @@ function resolvedRange() {
     return { from: f.from_date, to: f.to_date, group: RANGES.custom.group };
   }
 
-  const r = RANGES[f.preset] || RANGES.month;
-  return { from: isoDaysAgo(r.days), to: '', group: r.group };
+  if (f.preset === 'today') {
+    return { from: localIsoDate(new Date()), to: '', group: RANGES.today.group };
+  }
+
+  if (f.preset === 'week') {
+    return { from: startOfWeekIso(), to: '', group: RANGES.week.group };
+  }
+
+  if (f.preset === 'month') {
+    return { from: startOfMonthIso(), to: '', group: RANGES.month.group };
+  }
+
+  if (f.preset === 'quarter') {
+    return { from: startOfQuarterIso(), to: '', group: RANGES.quarter.group };
+  }
+
+  return { from: '', to: '', group: RANGES.current.group };
 }
 
 function statsParams() {
@@ -1468,6 +1506,7 @@ function statsParams() {
   if (state.statsFilters.mailbox_ids !== null) {
     p.set('mailboxIds', state.statsFilters.mailbox_ids.join(','));
   }
+  p.set('automated', state.statsFilters.automated || 'all');
   return p;
 }
 
@@ -1484,7 +1523,15 @@ function rangeRowHtml(idPrefix) {
           <span class="small">to</span>
           <input type="date" id="${idPrefix}-to" value="${escapeHtml(f.to_date)}" />
         </span>` : ''}
-      <div id="${idPrefix}-mailboxes" style="position:relative; margin-left:auto;"></div>
+      <label class="small" style="display:flex;align-items:center;gap:6px;margin-left:auto;">
+        Ticket type
+        <select id="${idPrefix}-automated" style="width:auto;min-width:145px;">
+          <option value="all" ${f.automated === 'all' ? 'selected' : ''}>All tickets</option>
+          <option value="false" ${f.automated === 'false' ? 'selected' : ''}>Non-automated</option>
+          <option value="true" ${f.automated === 'true' ? 'selected' : ''}>Automated only</option>
+        </select>
+      </label>
+      <div id="${idPrefix}-mailboxes" style="position:relative;"></div>
     </div>`;
 }
 
@@ -1505,6 +1552,11 @@ function wireRangeRow(idPrefix, reload) {
     state.statsFilters = { ...state.statsFilters, to_date: to.value };
     reload();
   });
+  const automated = el(`${idPrefix}-automated`);
+  if (automated) automated.addEventListener('change', () => {
+    state.statsFilters = { ...state.statsFilters, automated: automated.value };
+    reload();
+  });
 }
 
 // Two letters beat a photo here: no upload, no maintenance, and it gives the
@@ -1520,6 +1572,7 @@ function initials(name) {
 function tatCell(tat, targetHours) {
   if (!tat || tat.avg_seconds == null) return '<td class="nil">—</td>';
   const hrs = tat.avg_seconds / 3600;
+  if (targetHours == null) return `<td><span class="dot ok"></span>${escapeHtml(tat.avg_human)}</td>`;
   const cls = hrs >= targetHours ? 'bad' : hrs >= targetHours * 0.6 ? 'warn' : '';
   return `<td class="${cls}"><span class="dot ${cls || 'ok'}"></span>${escapeHtml(tat.avg_human)}</td>`;
 }
@@ -1527,7 +1580,7 @@ function tatCell(tat, targetHours) {
 function slaCell(sla) {
   if (!sla || sla.percent == null) return '<td class="nil">—</td>';
   const cls = sla.percent >= 90 ? 'ok' : sla.percent >= 75 ? 'warn' : 'bad';
-  return `<td class="${cls}" title="${sla.met} of ${sla.total} tickets met both SLA targets"><span class="dot ${cls}"></span>${sla.percent}%<span class="small" style="margin-left:5px;">(${sla.met}/${sla.total})</span></td>`;
+  return `<td class="${cls}" title="${sla.met} of ${sla.total} tickets resolved within 72 hours"><span class="dot ${cls}"></span>${sla.percent}%<span class="small" style="margin-left:5px;">(${sla.met}/${sla.total})</span></td>`;
 }
 
 // ------------------------------------------------------------------ dashboard
@@ -1571,7 +1624,7 @@ async function renderStatsData() {
     <div class="page-head">
       <div>
         <h2 style="margin:0;">Dashboard</h2>
-        <p class="meta">${data.total_tickets} tickets · ${data.automated_excluded_total} automated excluded${
+        <p class="meta">${data.total_tickets} tickets · ${data.automated_total || 0} automated${
           data.mailbox_filter && data.mailbox_filter.excluded.length
             ? ` · excluding ${data.mailbox_filter.excluded.map(escapeHtml).join(', ')}` : ''
         }</p>
@@ -1593,6 +1646,8 @@ async function renderStatsData() {
       <div class="tile"><p class="k">Team SLA</p><p class="v">${data.sla && data.sla.percent != null ? `${data.sla.percent}%` : '—'}</p><p class="c">${data.sla ? `${data.sla.met}/${data.sla.total} met` : ''}</p></div>
     </div>
 
+    <p class="small" style="margin:10px 0 0;">SLA = resolution completed within 72 hours of first receipt. First response is shown separately and is not part of SLA.</p>
+
     <div class="dash-card">
       <table class="dash">
         <thead><tr>
@@ -1601,7 +1656,7 @@ async function renderStatsData() {
         </tr></thead>
         <tbody>
           ${people.map((p) => `
-            <tr class="link-row" data-member="${p.member.id}">
+            <tr class="${p.member.id == null ? 'queue-row' : 'link-row'}" ${p.member.id == null ? '' : `data-member="${p.member.id}"`} >
               <td class="name">
                 <span class="who">
                   <span class="avatar">${initials(p.member.name)}</span>
@@ -1616,7 +1671,7 @@ async function renderStatsData() {
                 <span class="share"><span style="width:${maxTotal ? Math.round((p.counts.total / maxTotal) * 100) : 0}%"></span></span>
               </td>
               ${slaCell(p.sla)}
-              ${tatCell(p.tat.first_response, FIRST_REPLY_TARGET_H)}
+              ${tatCell(p.tat.first_response, null)}
               ${tatCell(p.tat.resolution, RESOLUTION_TARGET_H)}
             </tr>`).join('')}
         </tbody>

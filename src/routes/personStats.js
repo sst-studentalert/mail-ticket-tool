@@ -22,13 +22,7 @@ router.use(requireAuth, requireAdmin);
 // request isn't, so different mailboxes reasonably want different numbers.
 const OVERDUE_HOURS = 72;
 
-const FIRST_RESPONSE_EXPR = `(
-  CASE
-    WHEN assigned_at IS NOT NULL AND first_replied_at IS NOT NULL
-      THEN LEAST(assigned_at, first_replied_at)
-    ELSE COALESCE(assigned_at, first_replied_at)
-  END
-)`;
+const FIRST_RESPONSE_EXPR = `first_replied_at`;
 const RESOLUTION_EXPR = `COALESCE(closed_at, first_replied_at)`;
 
 const GROUPS = { day: 'day', week: 'week', month: 'month' };
@@ -62,6 +56,13 @@ router.get('/:id', async (req, res, next) => {
     const mbSql = scope.sql;
     const mbParams = scope.params;
 
+    const automatedFilter = String(req.query.automated || 'all').toLowerCase();
+    const ticketTypeSql = automatedFilter === 'true'
+      ? 'AND is_automated = 1'
+      : automatedFilter === 'false'
+        ? 'AND is_automated = 0'
+        : '';
+
     // --- counts -----------------------------------------------------------
     // `who` is spliced in so the same query serves both this person and the
     // team-wide baseline; its params always come first because it sits ahead
@@ -70,7 +71,7 @@ router.get('/:id', async (req, res, next) => {
       const row = await db
         .prepare(
           `SELECT COUNT(*) AS c FROM tickets
-           WHERE is_automated = 0 ${who} ${dateSql} ${mbSql} ${extra}`
+           WHERE 1=1 ${ticketTypeSql} ${who} ${dateSql} ${mbSql} ${extra}`
         )
         .get(...whoParams, ...dateParams, ...mbParams, ...extraParams);
       return row.c;
@@ -82,7 +83,7 @@ router.get('/:id', async (req, res, next) => {
           `SELECT AVG(EXTRACT(EPOCH FROM (${milestoneExpr} - first_received_at))) AS avg_seconds,
                   COUNT(*) AS n
            FROM tickets
-           WHERE is_automated = 0 AND ${milestoneExpr} IS NOT NULL AND first_received_at IS NOT NULL
+           WHERE 1=1 ${ticketTypeSql} AND ${milestoneExpr} IS NOT NULL AND first_received_at IS NOT NULL
              ${who} ${dateSql} ${mbSql}`
         )
         .get(...whoParams, ...dateParams, ...mbParams);
@@ -143,7 +144,7 @@ router.get('/:id', async (req, res, next) => {
                 AVG(EXTRACT(EPOCH FROM (${RESOLUTION_EXPR} - first_received_at)))
                   FILTER (WHERE ${RESOLUTION_EXPR} IS NOT NULL) AS res_avg_seconds
          FROM tickets
-         WHERE is_automated = 0 AND assignee_id = ? AND first_received_at IS NOT NULL
+         WHERE 1=1 ${ticketTypeSql} AND assignee_id = ? AND first_received_at IS NOT NULL
            ${dateSql} ${mbSql}
          GROUP BY 1 ORDER BY 1`
       )
@@ -169,7 +170,7 @@ router.get('/:id', async (req, res, next) => {
                 EXTRACT(EPOCH FROM (NOW() - t.first_received_at)) / 3600 AS waiting_hours
          FROM tickets t
          JOIN mailboxes m ON m.id = t.mailbox_id
-         WHERE t.is_automated = 0 AND t.assignee_id = ?
+         WHERE 1=1 ${ticketTypeSql.replace(/is_automated/g, 't.is_automated')} AND t.assignee_id = ?
            ${overdueWhere.replace(/first_replied_at|status|first_received_at/g, (s) => `t.${s}`)}
            ${dateSql.replace(/first_received_at/g, 't.first_received_at')}
            ${mbSql.replace(/mailbox_id/, 't.mailbox_id')}
@@ -196,6 +197,7 @@ router.get('/:id', async (req, res, next) => {
       mailbox_filter: { options: scope.options, included: scope.included, excluded: scope.excluded },
       from_date: from_date || null,
       to_date: to_date || null,
+      automated_filter: automatedFilter,
     });
   } catch (err) {
     next(err);
