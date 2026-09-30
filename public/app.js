@@ -269,11 +269,7 @@ async function renderTickets() {
         <button type="button" class="secondary-btn" id="clear-ticket-filters" style="white-space:nowrap;">Clear filters</button>
       </div>
       <div>
-        <label>Mailbox</label>
-        <select id="f-mailbox" multiple size="4" style="min-width:220px;">
-          ${state.mailboxes.map((m) => `<option value="${m.id}" ${state.filters.mailbox_ids.includes(Number(m.id)) ? 'selected' : ''}>${escapeHtml(m.email)}</option>`).join('')}
-        </select>
-        <div class="small">Hold Ctrl/Cmd to select multiple mailboxes.</div>
+        <div id="f-mailbox"></div>
       </div>
       ${isAdmin ? `
       <div>
@@ -324,10 +320,25 @@ async function renderTickets() {
     <div id="ticket-table-wrap"><em>Loading tickets...</em></div>
   `);
 
-  ['f-mailbox', 'f-assignee', 'f-status', 'f-automated', 'f-from', 'f-to'].forEach((id) => {
+  ['f-assignee', 'f-status', 'f-automated', 'f-from', 'f-to'].forEach((id) => {
     const node = el(id);
     if (node) node.addEventListener('change', applyFiltersAndReload);
   });
+
+  renderMailboxPicker(
+    'f-mailbox',
+    {
+      options: state.mailboxes.map((m) => ({
+        id: Number(m.id),
+        email: m.email,
+        selected: state.filters.mailbox_ids.includes(Number(m.id)),
+      })),
+    },
+    (ids) => {
+      state.filters = { ...state.filters, mailbox_ids: ids };
+      loadTickets();
+    }
+  );
   let debounce;
   ['f-tag', 'f-q'].forEach((id) => {
     el(id).addEventListener('input', () => {
@@ -337,7 +348,18 @@ async function renderTickets() {
   });
 
   el('clear-ticket-filters').addEventListener('click', () => {
-    Array.from(el('f-mailbox').options).forEach((o) => { o.selected = false; });
+    state.filters = {
+      ...state.filters,
+      mailbox_ids: [],
+      assignee_id: '',
+      status: '',
+      automated: '',
+      tag: '',
+      q: '',
+      from_date: '',
+      to_date: '',
+    };
+
     if (el('f-assignee')) el('f-assignee').value = '';
     el('f-status').value = '';
     el('f-automated').value = '';
@@ -346,7 +368,23 @@ async function renderTickets() {
     el('f-tag').value = '';
     el('f-from').value = '';
     el('f-to').value = '';
-    applyFiltersAndReload();
+
+    renderMailboxPicker(
+      'f-mailbox',
+      {
+        options: state.mailboxes.map((m) => ({
+          id: Number(m.id),
+          email: m.email,
+          selected: false,
+        })),
+      },
+      (ids) => {
+        state.filters = { ...state.filters, mailbox_ids: ids };
+        loadTickets();
+      }
+    );
+
+    loadTickets();
   });
 
   await loadTickets();
@@ -355,7 +393,7 @@ async function renderTickets() {
 function applyFiltersAndReload() {
   const assigneeNode = el('f-assignee');
   state.filters = {
-    mailbox_ids: Array.from(el('f-mailbox').selectedOptions).map((o) => Number(o.value)),
+    mailbox_ids: state.filters.mailbox_ids || [],
     assignee_id: assigneeNode ? assigneeNode.value : '',
     status: el('f-status').value,
     automated: el('f-automated').value,
@@ -1947,19 +1985,24 @@ function renderMailboxPicker(containerId, filter, onChange) {
   const on = opts.filter((m) => m.selected).length;
 
   box.innerHTML = `
-    <label>Mailboxes</label>
-    <div style="position:relative;">
-      <button type="button" class="filter-btn ${on < opts.length ? 'active' : ''}" id="${containerId}-btn">
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
-             stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">
-          <path d="M1.5 2.5h13l-5 6v5l-3-1.5v-3.5z" />
-        </svg>
-        ${on} of ${opts.length}
+    <label>Mailbox</label>
+    <div style="position:relative;min-width:250px;">
+      <button type="button"
+              class="filter-btn ${on > 0 && on < opts.length ? 'active' : ''}"
+              id="${containerId}-btn"
+              style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <span>${on === 0 || on === opts.length ? 'All mailboxes' : `${on} selected`}</span>
+        <span aria-hidden="true">▾</span>
       </button>
-      <div class="filter-pop" id="${containerId}-pop" style="display:none;">
-        <div class="quick"><a data-all="1">Select all</a><a data-none="1">Clear all</a></div>
+      <div class="filter-pop"
+           id="${containerId}-pop"
+           style="display:none;position:absolute;left:0;top:calc(100% + 6px);z-index:1000;min-width:100%;max-height:300px;overflow:auto;">
+        <div class="quick" style="display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-bottom:1px solid var(--line-soft);">
+          <a href="#" data-all="1">Select All</a>
+          <a href="#" data-none="1">Clear All</a>
+        </div>
         ${opts.map((m) => `
-          <label class="opt">
+          <label class="opt" style="display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;">
             <input type="checkbox" data-mailbox-id="${m.id}" ${m.selected ? 'checked' : ''} />
             <span>${escapeHtml(m.email)}</span>
           </label>`).join('')}
@@ -1988,8 +2031,14 @@ function renderMailboxPicker(containerId, filter, onChange) {
   pop.querySelectorAll('input[data-mailbox-id]').forEach((cb) => {
     cb.addEventListener('change', () => onChange(current()));
   });
-  pop.querySelector('[data-all]').addEventListener('click', () => onChange(opts.map((m) => m.id)));
-  pop.querySelector('[data-none]').addEventListener('click', () => onChange([]));
+  pop.querySelector('[data-all]').addEventListener('click', (e) => {
+    e.preventDefault();
+    onChange(opts.map((m) => m.id));
+  });
+  pop.querySelector('[data-none]').addEventListener('click', (e) => {
+    e.preventDefault();
+    onChange([]);
+  });
 
   if (!renderMailboxPicker._wired) {
     renderMailboxPicker._wired = true;
