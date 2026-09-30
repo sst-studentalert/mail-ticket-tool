@@ -7,7 +7,7 @@ const state = {
   mailboxes: [],
   roster: [],
   tickets: [],
-  filters: { mailbox_ids: null, mailbox_id: '', assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
+  filters: { mailbox_ids: [], assignee_id: '', status: '', automated: '', tag: '', q: '', from_date: '', to_date: '' },
   statsFilters: { preset: 'month', from_date: '', to_date: '', mailbox_ids: null, automated: 'all', unit: '#' },
   myStatsFilters: { from_date: '', to_date: '' },
   personId: null,
@@ -270,7 +270,10 @@ async function renderTickets() {
       </div>
       <div>
         <label>Mailbox</label>
-        <div id="ticket-mailbox-picker"></div>
+        <select id="f-mailbox" multiple size="4" style="min-width:220px;">
+          ${state.mailboxes.map((m) => `<option value="${m.id}" ${state.filters.mailbox_ids.includes(Number(m.id)) ? 'selected' : ''}>${escapeHtml(m.email)}</option>`).join('')}
+        </select>
+        <div class="small">Hold Ctrl/Cmd to select multiple mailboxes.</div>
       </div>
       ${isAdmin ? `
       <div>
@@ -321,12 +324,10 @@ async function renderTickets() {
     <div id="ticket-table-wrap"><em>Loading tickets...</em></div>
   `);
 
-  ['f-assignee', 'f-status', 'f-automated', 'f-from', 'f-to'].forEach((id) => {
+  ['f-mailbox', 'f-assignee', 'f-status', 'f-automated', 'f-from', 'f-to'].forEach((id) => {
     const node = el(id);
     if (node) node.addEventListener('change', applyFiltersAndReload);
   });
-
-  renderTicketMailboxPicker();
   let debounce;
   ['f-tag', 'f-q'].forEach((id) => {
     el(id).addEventListener('input', () => {
@@ -336,7 +337,7 @@ async function renderTickets() {
   });
 
   el('clear-ticket-filters').addEventListener('click', () => {
-    state.filters.mailbox_ids = null;
+    Array.from(el('f-mailbox').options).forEach((o) => { o.selected = false; });
     if (el('f-assignee')) el('f-assignee').value = '';
     el('f-status').value = '';
     el('f-automated').value = '';
@@ -354,7 +355,7 @@ async function renderTickets() {
 function applyFiltersAndReload() {
   const assigneeNode = el('f-assignee');
   state.filters = {
-    ...state.filters,
+    mailbox_ids: Array.from(el('f-mailbox').selectedOptions).map((o) => Number(o.value)),
     assignee_id: assigneeNode ? assigneeNode.value : '',
     status: el('f-status').value,
     automated: el('f-automated').value,
@@ -366,83 +367,6 @@ function applyFiltersAndReload() {
   loadTickets();
 }
 
-
-function renderTicketMailboxPicker() {
-  const box = el('ticket-mailbox-picker');
-  if (!box) return;
-
-  const selected = state.filters.mailbox_ids;
-  const allSelected = selected === null || selected.length === state.mailboxes.length;
-  const selectedCount = selected === null ? state.mailboxes.length : selected.length;
-
-  box.innerHTML = `
-    <div style="position:relative;">
-      <button type="button" class="filter-btn" id="ticket-mailbox-picker-btn"
-              style="width:100%;text-align:left;display:flex;align-items:center;justify-content:space-between;">
-        <span>${allSelected ? 'All mailboxes' : `${selectedCount} mailbox${selectedCount === 1 ? '' : 'es'} selected`}</span>
-        <span>▾</span>
-      </button>
-      <div id="ticket-mailbox-picker-pop"
-           style="display:none;position:absolute;z-index:50;left:0;right:0;top:calc(100% + 6px);background:var(--paper,#fff);border:1px solid var(--line,#ddd);border-radius:8px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.2);max-height:320px;overflow:auto;">
-        <div style="display:flex;justify-content:space-between;gap:8px;padding:4px 4px 8px;border-bottom:1px solid var(--line,#ddd);margin-bottom:6px;">
-          <button type="button" class="secondary" id="ticket-mailbox-select-all" style="font-size:12px;">Select all</button>
-          <button type="button" class="secondary" id="ticket-mailbox-clear-all" style="font-size:12px;">Clear all</button>
-        </div>
-        ${state.mailboxes.map((m) => {
-          const checked = selected === null || selected.includes(Number(m.id));
-          return `
-            <label style="display:flex;align-items:center;gap:8px;padding:7px 4px;margin:0;cursor:pointer;">
-              <input type="checkbox" class="ticket-mailbox-checkbox" value="${m.id}" ${checked ? 'checked' : ''} style="width:auto;margin:0;" />
-              <span>${escapeHtml(m.email)}</span>
-            </label>`;
-        }).join('')}
-      </div>
-    </div>
-  `;
-
-  const btn = el('ticket-mailbox-picker-btn');
-  const pop = el('ticket-mailbox-picker-pop');
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    pop.style.display = pop.style.display === 'none' ? 'block' : 'none';
-  });
-  pop.addEventListener('click', (e) => e.stopPropagation());
-
-  const reloadWithSelection = () => {
-    const ids = Array.from(pop.querySelectorAll('.ticket-mailbox-checkbox:checked'))
-      .map((cb) => Number(cb.value));
-    state.filters.mailbox_ids = ids.length === state.mailboxes.length ? null : ids;
-    loadTickets();
-    renderTicketMailboxPicker();
-  };
-
-  pop.querySelectorAll('.ticket-mailbox-checkbox').forEach((cb) => {
-    cb.addEventListener('change', reloadWithSelection);
-  });
-
-  el('ticket-mailbox-select-all').addEventListener('click', () => {
-    state.filters.mailbox_ids = null;
-    loadTickets();
-    renderTicketMailboxPicker();
-  });
-
-  el('ticket-mailbox-clear-all').addEventListener('click', () => {
-    state.filters.mailbox_ids = [];
-    loadTickets();
-    renderTicketMailboxPicker();
-  });
-
-  if (!renderTicketMailboxPicker._wired) {
-    renderTicketMailboxPicker._wired = true;
-    document.addEventListener('click', (e) => {
-      const current = document.getElementById('ticket-mailbox-picker-pop');
-      const container = document.getElementById('ticket-mailbox-picker');
-      if (current && container && !container.contains(e.target)) current.style.display = 'none';
-    });
-  }
-}
-
 async function loadTickets() {
   const wrap = el('ticket-table-wrap');
   if (wrap) wrap.innerHTML = '<em>Loading tickets...</em>';
@@ -450,13 +374,15 @@ async function loadTickets() {
   try {
     const params = new URLSearchParams();
     Object.entries(state.filters).forEach(([k, v]) => {
-      if (k === 'mailbox_ids') return;
-      if (v) params.set(k, v);
-    });
-    if (state.filters.mailbox_ids !== null) {
-      params.set('mailboxIds', state.filters.mailbox_ids.join(','));
-    }
-    const { tickets } = await api(`/tickets?${params.toString()}`);
+    if (Array.isArray(v)) { if (v.length) params.set(k, v.join(',')); }
+    else if (v) params.set(k, v);
+  });
+    if (state.filters.mailbox_ids && state.filters.mailbox_ids.length) {
+    params.set('mailboxIds', state.filters.mailbox_ids.join(','));
+  } else {
+    params.delete('mailbox_ids');
+  }
+  const { tickets } = await api(`/tickets?${params.toString()}`);
     state.tickets = tickets || [];
     renderTicketTable();
   } catch (err) {
@@ -531,7 +457,7 @@ function rowHtml(t) {
         ${t.is_automated ? '<span class="badge automated">automated</span>' : ''}
       </td>
       <td>${escapeHtml(t.assignee_name || '—')}</td>
-      <td><span class="badge ${t.status}">${t.status === 'reopened' ? 'Reopened' : t.status}</span></td>
+      <td><span class="badge ${t.status}">${t.status}</span></td>
       <td>${tatCell(t)}</td>
       <td>${t.tags.map((tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')}</td>
     </tr>
@@ -638,7 +564,7 @@ async function renderLearner() {
       <div class="stats-grid">
         <div class="card stat-card">
           <h3>Tickets by status</h3>
-          ${['unassigned','assigned','replied','closed'].map((key) => `
+          ${['unassigned','assigned','replied','reopened','closed'].map((key) => `
             <div class="stat-row">
               <span>${learnerStatusLabel(key)}</span>
               <strong>${status[key] || 0}</strong>
@@ -1157,7 +1083,7 @@ async function openTicket(id) {
           <div class="side-field">
             <label>Status</label>
             <select id="status-select">
-              ${['unassigned', 'assigned', 'replied', 'closed'].map((s) => `<option value="${s}" ${s === ticket.status ? 'selected' : ''}>${s}</option>`).join('')}
+              ${['unassigned', 'assigned', 'replied', 'reopened', 'closed'].map((s) => `<option value="${s}" ${s === ticket.status ? 'selected' : ''}>${s}</option>`).join('')}
             </select>
           </div>
           <div class="side-field">
@@ -1562,23 +1488,19 @@ function resolvedRange() {
   }
 
   if (f.preset === 'today') {
-    const today = localIsoDate(new Date());
-    return { from: today, to: today, group: RANGES.today.group };
+    return { from: localIsoDate(new Date()), to: '', group: RANGES.today.group };
   }
 
   if (f.preset === 'week') {
-    const today = localIsoDate(new Date());
-    return { from: startOfWeekIso(), to: today, group: RANGES.week.group };
+    return { from: startOfWeekIso(), to: '', group: RANGES.week.group };
   }
 
   if (f.preset === 'month') {
-    const today = localIsoDate(new Date());
-    return { from: startOfMonthIso(), to: today, group: RANGES.month.group };
+    return { from: startOfMonthIso(), to: '', group: RANGES.month.group };
   }
 
   if (f.preset === 'quarter') {
-    const today = localIsoDate(new Date());
-    return { from: startOfQuarterIso(), to: today, group: RANGES.quarter.group };
+    return { from: startOfQuarterIso(), to: '', group: RANGES.quarter.group };
   }
 
   return { from: '', to: '', group: RANGES.current.group };
@@ -1701,15 +1623,9 @@ async function renderStatsData() {
   const people = data.per_assignee.filter((p) => p.counts.total > 0);
   const maxTotal = people.reduce((m, p) => Math.max(m, p.counts.total), 0);
   const teamTotals = people.reduce((acc, p) => {
-    ['assigned', 'replied', 'reopened', 'closed', 'total'].forEach((k) => { acc[k] += Number(p.counts[k] || 0); });
+    ['assigned', 'replied', 'reopened', 'closed', 'total'].forEach((k) => { acc[k] += p.counts[k] || 0; });
     return acc;
   }, { assigned: 0, replied: 0, reopened: 0, closed: 0, total: 0 });
-
-  // Team total must reconcile to Received. Unassigned tickets are not people,
-  // so keep them separate in the API but include them in the dashboard total.
-  const unassignedTotal = Number(data.unassigned && data.unassigned.total || 0);
-  const overallTotal = teamTotals.total + unassignedTotal;
-  const unassignedUnassigned = Number(data.unassigned && data.unassigned.unassigned || 0);
 
   // Top tiles are status totals. Include the unassigned bucket for replied/closed,
   // while keeping the per-person table based only on assigned people.
@@ -1732,10 +1648,11 @@ async function renderStatsData() {
     ${rangeRowHtml('s')}
 
     <div class="tiles">
-      ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${overallTotal}</p></div>` : ''}
+      ${state.statsFilters.preset !== 'current' ? `<div class="tile"><p class="k">Received</p><p class="v">${teamTotals.total + data.unassigned.total}</p></div>` : ''}
       <div class="tile queue-tile" data-unassigned-queue="1" tabindex="0" role="button" title="Open unassigned tickets"><p class="k">Unassigned</p><p class="v">${data.unassigned.unassigned}</p></div>
       <div class="tile"><p class="k">First response pending</p><p class="v">${teamTotals.assigned}</p></div>
-      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + teamTotals.reopened + (data.unassigned.replied || 0) + (data.unassigned.reopened || 0)}</p></div>
+      <div class="tile"><p class="k">Open</p><p class="v">${teamTotals.replied + data.unassigned.replied}</p></div>
+      <div class="tile"><p class="k">Reopened</p><p class="v">${teamTotals.reopened + (data.unassigned.reopened || 0)}</p></div>
       <div class="tile"><p class="k">Closed</p><p class="v">${teamTotals.closed + data.unassigned.closed}</p></div>
       <div class="tile"><p class="k">Team SLA</p><p class="v">${data.sla && data.sla.percent != null ? `${data.sla.percent}%` : '—'}</p><p class="c">${data.sla ? `${data.sla.met}/${data.sla.total} met` : ''}</p></div>
     </div>
@@ -1745,7 +1662,7 @@ async function renderStatsData() {
     <div class="dash-card">
       <table class="dash">
         <thead><tr>
-          <th>Person</th><th>Unassigned</th><th>Assigned</th><th>Replied</th><th>Reopened</th><th>Closed</th>
+          <th>Person</th><th>Assigned</th><th>Replied</th><th>Reopened</th><th>Closed</th>
           <th>Total</th><th>SLA</th><th>1st response</th><th>Resolution</th>
         </tr></thead>
         <tbody>
@@ -1757,7 +1674,6 @@ async function renderStatsData() {
                   <span>${escapeHtml(p.member.name)}</span>
                 </span>
               </td>
-              <td>—</td>
               <td>${cell(p.counts.assigned, p.counts.total)}</td>
               <td>${cell(p.counts.replied, p.counts.total)}</td>
               <td>${cell(p.counts.reopened || 0, p.counts.total)}</td>
@@ -1773,12 +1689,11 @@ async function renderStatsData() {
         </tbody>
         <tfoot><tr>
           <td><span class="who"><span class="avatar blank"></span><span>Team total</span></span></td>
-          <td>${unassignedUnassigned}</td>
-          <td>${cell(teamTotals.assigned, overallTotal)}</td>
-          <td>${cell(teamTotals.replied + Number(data.unassigned.replied || 0), overallTotal)}</td>
-          <td>${cell(teamTotals.reopened + Number(data.unassigned.reopened || 0), overallTotal)}</td>
-          <td>${cell(teamTotals.closed + Number(data.unassigned.closed || 0), overallTotal)}</td>
-          <td>${overallTotal}</td>
+          <td>${cell(teamTotals.assigned, teamTotals.total)}</td>
+          <td>${cell(teamTotals.replied, teamTotals.total)}</td>
+          <td>${cell(teamTotals.reopened, teamTotals.total)}</td>
+          <td>${cell(teamTotals.closed, teamTotals.total)}</td>
+          <td>${teamTotals.total}</td>
           ${slaCell(data.sla)}
           <td>${data.tat.first_response.avg_human || '—'}</td>
           <td>${data.tat.resolution.avg_human || '—'}</td>
@@ -1888,7 +1803,7 @@ async function renderPersonData() {
               <tr class="overdue">
                 <td>${escapeHtml(t.subject || '(no subject)')}</td>
                 <td>${escapeHtml(t.mailbox.split('@')[0])}</td>
-                <td><span class="badge ${t.status}">${t.status === 'reopened' ? 'Reopened' : t.status}</span></td>
+                <td><span class="badge ${t.status}">${t.status}</span></td>
                 <td class="alert">${t.waiting_hours >= 48
                   ? `${Math.round(t.waiting_hours / 24)}d` : `${t.waiting_hours}h`}</td>
               </tr>`).join('')}
@@ -1901,6 +1816,7 @@ async function renderPersonData() {
     <div class="tiles">
       <div class="tile"><p class="k">Open now</p><p class="v">${d.totals.open}</p>
         <p class="c${worse(d.totals.open, d.team_avg.open, true)}">team avg ${d.team_avg.open}</p></div>
+      <div class="tile"><p class="k">Reopened</p><p class="v">${d.totals.reopened || 0}</p></div>
       <div class="tile"><p class="k">Closed</p><p class="v">${d.totals.closed}</p>
         <p class="c">team avg ${d.team_avg.closed}</p></div>
       <div class="tile"><p class="k">1st response</p><p class="v">${d.totals.first_response.avg_human || '—'}</p>
@@ -1912,14 +1828,14 @@ async function renderPersonData() {
     <div class="dash-card">
       <table class="dash">
         <thead><tr>
-          <th>${bucketLabel}</th><th>Received</th><th>Replied</th><th>Closed</th>
+          <th>${bucketLabel}</th><th>Received</th><th>Replied</th><th>Reopened</th><th>Closed</th>
           <th>1st response</th><th>Resolution</th>
         </tr></thead>
         <tbody>
           ${d.periods.length ? d.periods.slice().reverse().map((r) => `
             <tr>
               <td>${r.bucket}</td>
-              <td>${r.received}</td><td>${r.replied}</td><td>${r.closed}</td>
+              <td>${r.received}</td><td>${r.replied}</td><td>${r.reopened || 0}</td><td>${r.closed}</td>
               <td>${r.first_response_human || '—'}</td>
               <td>${r.resolution_human || '—'}</td>
             </tr>`).join('')
