@@ -259,7 +259,7 @@ async function createTicketFromMessage(mailbox, message) {
     // Keep the current assignee when there is one; otherwise restore the
     // most recent assignee recorded in ticket_events when that person still
     // exists and has access to this mailbox.
-    const reopening = ['replied', 'closed'].includes(existingThreadTicket.status);
+    const reopening = existingThreadTicket.status === 'closed';
     let restoredAssigneeId = existingThreadTicket.assignee_id || null;
     if (reopening && !restoredAssigneeId) {
       restoredAssigneeId = await findLastAssigneeId(existingThreadTicket.id, mailbox.id);
@@ -273,6 +273,7 @@ async function createTicketFromMessage(mailbox, message) {
         `UPDATE tickets SET
            gmail_message_id = ?, message_id_header = ?, from_address = ?, subject = ?,
            snippet = ?, body = ?, received_at = ?, status = ?, assignee_id = ?,
+           closed_at = CASE WHEN ? = 'reopened' THEN NULL ELSE closed_at END,
            is_automated = ?, automated_reason = ?, automated_source = 'auto',
            updated_at = datetime('now')
          WHERE id = ?`
@@ -287,6 +288,7 @@ async function createTicketFromMessage(mailbox, message) {
         message.receivedAt,
         newStatus,
         restoredAssigneeId,
+        newStatus,
         isAutomated ? 1 : 0,
         reasons.length ? reasons.join('; ') : null,
         existingThreadTicket.id
