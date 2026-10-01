@@ -341,6 +341,17 @@ async function getVisibility(req, alias = 't') {
     }
   }
 
+  // Keep learner dashboards and cross-mailbox counts private too.
+  if (!req.user.is_super_admin) {
+    clauses.push(`
+      ${alias}.mailbox_id IN (
+        SELECT id FROM mailboxes
+        WHERE COALESCE(is_private, 0) = 0
+           OR private_owner_id = ?
+      )`);
+    params.push(req.user.id);
+  }
+
   return {
     sql: clauses.length ? `AND ${clauses.join(' AND ')}` : '',
     params,
@@ -431,10 +442,23 @@ async function getTicketOr404(req, res) {
 // from the admin/agent role - see services/mailboxAccess.js). Returns true
 // (allowed) / false (should 403).
 async function canAccessTicket(req, ticket) {
+  const mailbox = await db
+    .prepare('SELECT * FROM mailboxes WHERE id = ?')
+    .get(ticket.mailbox_id);
+
+  // Super Admin is the only role that can see every mailbox, including
+  // private mailboxes belonging to another person.
+  if (req.user.is_super_admin) return true;
+
+  // A private mailbox is visible only to its owner.
+  if (mailbox && Number(mailbox.is_private) === 1) {
+    return Number(mailbox.private_owner_id) === Number(req.user.id);
+  }
+
   const accessibleMailboxIds = await getAccessibleMailboxIds(req.user.id);
   if (!mailboxAllowed(accessibleMailboxIds, ticket.mailbox_id)) return false;
   if (req.user.is_admin) return true;
-  if (ticket.assignee_id === req.user.id) return true;
+  if (Number(ticket.assignee_id) === Number(req.user.id)) return true;
   const fullAccessMailboxIds = await getFullAccessMailboxIds(req.user.id);
   return fullAccessMailboxIds.includes(ticket.mailbox_id);
 }
@@ -452,7 +476,7 @@ async function requireTicketAccess(req, res, ticket) {
 router.get('/', async (req, res, next) => {
   try {
     await mergeTableReady;
-    const { mailbox_id, mailboxIds, assignee_id, status, automated, tag, q, learner, from_date, to_date } = req.query;
+    const { mailbox_id, assignee_id, status, automated, tag, q, learner, from_date, to_date } = req.query;
 
     const clauses = [];
     const params = [];
@@ -509,17 +533,24 @@ router.get('/', async (req, res, next) => {
       }
     }
 
-    const selectedMailboxIds = String(mailboxIds || '')
-      .split(',')
-      .map((v) => Number(v.trim()))
-      .filter((v) => Number.isInteger(v) && v > 0);
-    if (selectedMailboxIds.length) {
-      clauses.push('t.mailbox_id = ANY(?)');
-      params.push(selectedMailboxIds);
-    } else if (mailbox_id) {
+    if (mailbox_id) {
       clauses.push('t.mailbox_id = ?');
       params.push(mailbox_id);
     }
+
+    // Private mailbox isolation. This is deliberately applied to the list
+    // query as well as getTicketOr404/canAccessTicket so a normal Admin can
+    // never discover a private Director ticket through filters, search,
+    // learner counts, or the mailbox selector.
+    if (!req.user.is_super_admin) {
+      clauses.push(`t.mailbox_id IN (
+        SELECT id FROM mailboxes
+        WHERE COALESCE(is_private, 0) = 0
+           OR private_owner_id = ?
+      )`);
+      params.push(req.user.id);
+    }
+
     if (status) {
       clauses.push('t.status = ?');
       params.push(status);
@@ -856,6 +887,19 @@ router.patch('/:id/assign', async (req, res, next) => {
     const ticket = await getTicketOr404(req, res);
     if (!ticket) return;
 
+    const mailbox = await db
+      .prepare('SELECT * FROM mailboxes WHERE id = ?')
+      .get(ticket.mailbox_id);
+
+    if (
+      mailbox &&
+      Number(mailbox.is_private) === 1 &&
+      !req.user.is_super_admin &&
+      Number(mailbox.private_owner_id) !== Number(req.user.id)
+    ) {
+      return res.status(403).json({ error: 'This is a private mailbox' });
+    }
+
     const actingUserMailboxes = await getAccessibleMailboxIds(req.user.id);
     if (!mailboxAllowed(actingUserMailboxes, ticket.mailbox_id)) {
       return res.status(403).json({ error: "You don't have access to this ticket's mailbox" });
@@ -882,9 +926,7 @@ router.patch('/:id/assign', async (req, res, next) => {
       }
     }
 
-    const newStatus = assignee_id
-      ? (ticket.status === 'reopened' ? 'reopened' : 'assigned')
-      : ticket.status === 'assigned' || ticket.status === 'reopened' ? 'unassigned' : ticket.status;
+    const newStatus = assignee_id ? 'assigned' : ticket.status === 'assigned' ? 'unassigned' : ticket.status;
 
     // assigned_at is a TAT milestone: only ever set on the *first* assignment,
     // so reassigning a ticket later doesn't reset "time to first response".
@@ -922,7 +964,7 @@ router.patch('/:id/status', async (req, res, next) => {
     if (!(await requireTicketAccess(req, res, ticket))) return;
 
     const { status } = req.body || {};
-    const allowed = ['unassigned', 'assigned', 'replied', 'reopened', 'closed'];
+    const allowed = ['unassigned', 'assigned', 'replied', 'closed'];
     if (!allowed.includes(status)) {
       return res.status(400).json({ error: `status must be one of: ${allowed.join(', ')}` });
     }

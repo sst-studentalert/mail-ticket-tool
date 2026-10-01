@@ -71,8 +71,19 @@ function onHashChange() {
 
 async function loadShellData() {
   const [mb, roster] = await Promise.all([api('/mailboxes'), api('/roster')]);
-  state.mailboxes = mb.mailboxes;
   state.roster = roster.members;
+
+  // Private mailbox visibility is also enforced by the backend. This frontend
+  // filter is only the UI layer, so a normal Admin does not even see the
+  // Director's private mailbox in mailbox selectors.
+  const isSuperAdmin = !!(state.user && state.user.is_super_admin);
+  const userId = Number(state.user && state.user.id);
+
+  state.mailboxes = (mb.mailboxes || []).filter((mailbox) => {
+    if (Number(mailbox.is_private) !== 1) return true;
+    if (isSuperAdmin) return true;
+    return Number(mailbox.private_owner_id) === userId;
+  });
 }
 
 // ---------- Login ----------

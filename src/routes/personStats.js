@@ -56,6 +56,17 @@ router.get('/:id', async (req, res, next) => {
     const mbSql = scope.sql;
     const mbParams = scope.params;
 
+    // Private mailbox isolation. Super Admin sees everything; everyone else
+    // sees shared mailboxes plus their own private mailbox only.
+    const privateMailboxSql = req.user.is_super_admin
+      ? ''
+      : `AND mailbox_id IN (
+           SELECT id FROM mailboxes
+           WHERE COALESCE(is_private, 0) = 0
+              OR private_owner_id = ?
+         )`;
+    const privateMailboxParams = req.user.is_super_admin ? [] : [req.user.id];
+
     const automatedFilter = String(req.query.automated || 'all').toLowerCase();
     const ticketTypeSql = automatedFilter === 'true'
       ? 'AND is_automated = 1'
@@ -71,9 +82,9 @@ router.get('/:id', async (req, res, next) => {
       const row = await db
         .prepare(
           `SELECT COUNT(*) AS c FROM tickets
-           WHERE 1=1 ${ticketTypeSql} ${who} ${dateSql} ${mbSql} ${extra}`
+           WHERE 1=1 ${ticketTypeSql} ${who} ${dateSql} ${mbSql} ${privateMailboxSql} ${extra}`
         )
-        .get(...whoParams, ...dateParams, ...mbParams, ...extraParams);
+        .get(...whoParams, ...dateParams, ...mbParams, ...privateMailboxParams, ...extraParams);
       return row.c;
     }
 
@@ -84,9 +95,9 @@ router.get('/:id', async (req, res, next) => {
                   COUNT(*) AS n
            FROM tickets
            WHERE 1=1 ${ticketTypeSql} AND ${milestoneExpr} IS NOT NULL AND first_received_at IS NOT NULL
-             ${who} ${dateSql} ${mbSql}`
+             ${who} ${dateSql} ${mbSql} ${privateMailboxSql}`
         )
-        .get(...whoParams, ...dateParams, ...mbParams);
+        .get(...whoParams, ...dateParams, ...mbParams, ...privateMailboxParams);
       const avg = row.avg_seconds == null ? null : Number(row.avg_seconds);
       return { avg_seconds: avg, avg_human: fmtDuration(avg), sample_size: row.n };
     }
@@ -99,11 +110,9 @@ router.get('/:id', async (req, res, next) => {
       .get();
     const headcount = Math.max(memberCount.c, 1);
 
-    const openMine = await countFor(MINE, [memberId], "AND status IN ('assigned','unassigned','reopened')", []);
-    const reopenedMine = await countFor(MINE, [memberId], "AND status = 'reopened'", []);
+    const openMine = await countFor(MINE, [memberId], "AND status IN ('assigned','unassigned')", []);
     const closedMine = await countFor(MINE, [memberId], "AND status = 'closed'", []);
-    const openAll = await countFor(ANYONE, [], "AND status IN ('assigned','unassigned','reopened')", []);
-    const reopenedAll = await countFor(ANYONE, [], "AND status = 'reopened'", []);
+    const openAll = await countFor(ANYONE, [], "AND status IN ('assigned','unassigned')", []);
     const closedAll = await countFor(ANYONE, [], "AND status = 'closed'", []);
 
     // Overdue = never answered, not closed, waiting past the threshold.
@@ -120,7 +129,6 @@ router.get('/:id', async (req, res, next) => {
 
     const totals = {
       open: openMine,
-      reopened: reopenedMine,
       closed: closedMine,
       overdue: overdueMine,
       first_response: await tatFor(FIRST_RESPONSE_EXPR, MINE, [memberId]),
@@ -129,7 +137,6 @@ router.get('/:id', async (req, res, next) => {
 
     const teamAvg = {
       open: Math.round(openAll / headcount),
-      reopened: Math.round(reopenedAll / headcount),
       closed: Math.round(closedAll / headcount),
       overdue: Math.round(overdueAll / headcount),
       first_response: await tatFor(FIRST_RESPONSE_EXPR, ANYONE, []),
@@ -142,7 +149,6 @@ router.get('/:id', async (req, res, next) => {
         `SELECT date_trunc('${group}', first_received_at)::date AS bucket,
                 COUNT(*) AS received,
                 SUM(CASE WHEN first_replied_at IS NOT NULL THEN 1 ELSE 0 END) AS replied,
-                SUM(CASE WHEN status = 'reopened' THEN 1 ELSE 0 END) AS reopened,
                 SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed,
                 AVG(EXTRACT(EPOCH FROM (${FIRST_RESPONSE_EXPR} - first_received_at)))
                   FILTER (WHERE ${FIRST_RESPONSE_EXPR} IS NOT NULL) AS fr_avg_seconds,
@@ -150,16 +156,15 @@ router.get('/:id', async (req, res, next) => {
                   FILTER (WHERE ${RESOLUTION_EXPR} IS NOT NULL) AS res_avg_seconds
          FROM tickets
          WHERE 1=1 ${ticketTypeSql} AND assignee_id = ? AND first_received_at IS NOT NULL
-           ${dateSql} ${mbSql}
+           ${dateSql} ${mbSql} ${privateMailboxSql}
          GROUP BY 1 ORDER BY 1`
       )
-      .all(memberId, ...dateParams, ...mbParams);
+      .all(memberId, ...dateParams, ...mbParams, ...privateMailboxParams);
 
     const periods = periodRows.map((r) => ({
       bucket: r.bucket instanceof Date ? r.bucket.toISOString().slice(0, 10) : r.bucket,
       received: r.received,
       replied: r.replied,
-      reopened: r.reopened,
       closed: r.closed,
       first_response_avg_seconds: r.fr_avg_seconds == null ? null : Number(r.fr_avg_seconds),
       first_response_human: fmtDuration(r.fr_avg_seconds == null ? null : Number(r.fr_avg_seconds)),
@@ -183,7 +188,7 @@ router.get('/:id', async (req, res, next) => {
          ORDER BY t.first_received_at ASC
          LIMIT 50`
       )
-      .all(memberId, ...dateParams, ...mbParams);
+      .all(memberId, ...dateParams, ...mbParams, ...privateMailboxParams);
 
     res.json({
       member,

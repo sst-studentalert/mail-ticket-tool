@@ -1,24 +1,304 @@
-// Vercel serverless entrypoint. Vercel auto-detects any file under /api/ as
-// a function; vercel.json rewrites every request (static files, the SPA,
-// and /api/* routes alike) to this one function, which just hands the
-// request to the same Express app used by the always-on entrypoint
-// (src/server.js) - see src/app.js for the shared setup.
-const { getApp } = require('../src/app');
+// Team roster admin: add/remove/edit team members and their roles.
+// Reading the roster is open to logged-in members; management remains
+// admin-only, while only Super Admins can create/change/remove Super Admins.
+const express = require('express');
+const db = require('../db');
+const requireAuth = require('../middleware/requireAuth');
+const requireAdmin = require('../middleware/requireAdmin');
+const { hashPassword, publicUser } = require('../services/auth');
 
-module.exports = async (req, res) => {
+const router = express.Router();
+router.use(requireAuth);
+
+router.get('/', async (req, res, next) => {
   try {
-    const app = await getApp();
-    return app(req, res);
+    const rows = await db.prepare('SELECT * FROM team_members ORDER BY name').all();
+    const access = await db.prepare('SELECT team_member_id, mailbox_id, full_access FROM mailbox_access').all();
+    const accessByMember = new Map();
+    const fullAccessByMember = new Map();
+    for (const row of access) {
+      if (!accessByMember.has(row.team_member_id)) accessByMember.set(row.team_member_id, []);
+      accessByMember.get(row.team_member_id).push(row.mailbox_id);
+      if (row.full_access) {
+        if (!fullAccessByMember.has(row.team_member_id)) fullAccessByMember.set(row.team_member_id, []);
+        fullAccessByMember.get(row.team_member_id).push(row.mailbox_id);
+      }
+    }
+    // mailbox_ids: [] means unrestricted (sees every mailbox) - see the
+    // mailbox_access table comment in db.js. full_access_mailbox_ids is the
+    // subset of those where the member sees every ticket in the mailbox, not
+    // just ones assigned to them (see full_access column comment in db.js).
+    // Included for every member (not just admins) so the Team page can
+    // show/edit it for anyone.
+    res.json({
+      members: rows.map((r) => ({
+        ...publicUser(r),
+        // Expose role flags explicitly so the frontend can render/edit the
+        // Super Admin role without ever exposing password_hash.
+        is_admin: Number(r.is_admin) === 1,
+        is_super_admin: Number(r.is_super_admin) === 1,
+        mailbox_ids: accessByMember.get(r.id) || [],
+        full_access_mailbox_ids: fullAccessByMember.get(r.id) || [],
+      })),
+    });
   } catch (err) {
-    // Without this, a failure during app setup (bad DATABASE_URL, migration
-    // error, etc.) throws unhandled and Vercel shows a bare
-    // FUNCTION_INVOCATION_FAILED page with no way to tell what went wrong.
-    // Logging here means the real error shows up in Vercel's function logs,
-    // and returning JSON (instead of crashing) means curl/the browser shows
-    // something actionable too.
-    console.error('[api/index] App failed to initialize:', err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'Server failed to start', detail: String(err && err.message || err) }));
+    next(err);
   }
-};
+});
+
+router.post('/', requireAdmin, async (req, res, next) => {
+  try {
+    const {
+      name,
+      email,
+      password,
+      is_admin,
+      is_super_admin,
+    } = req.body || {};
+
+    const wantsSuperAdmin = !!is_super_admin;
+
+    // Only an existing Super Admin may create another Super Admin.
+    if (wantsSuperAdmin && !req.user.is_super_admin) {
+      return res.status(403).json({
+        error: 'Only a Super Admin can assign the Super Admin role',
+      });
+    }
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'name, email, and password are required' });
+    }
+    const existing = await db.prepare('SELECT id FROM team_members WHERE lower(email) = lower(?)').get(email);
+    if (existing) {
+      return res.status(409).json({ error: 'A team member with that email already exists' });
+    }
+
+    const hash = hashPassword(password);
+
+    // Super Admin is always also an Admin so all existing admin-only
+    // management pages/routes continue to work.
+    const adminFlag = wantsSuperAdmin || !!is_admin ? 1 : 0;
+    const superAdminFlag = wantsSuperAdmin ? 1 : 0;
+
+    const info = await db
+      .prepare(
+        `INSERT INTO team_members
+          (name, email, password_hash, is_admin, is_super_admin)
+         VALUES (?, ?, ?, ?, ?)
+         RETURNING id`
+      )
+      .run(name.trim(), email.trim(), hash, adminFlag, superAdminFlag);
+
+    const created = await db.prepare('SELECT * FROM team_members WHERE id = ?').get(info.lastInsertRowid);
+    res.status(201).json({ member: publicUser(created) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /api/roster/:id - edit a team member.
+// - Admins can edit anyone: name, email, is_admin, and optionally reset the
+//   password.
+// - Non-admins can only edit their OWN name and/or password (not email or
+//   is_admin) - simple self-service so someone can fix a typo'd name or
+//   change their own password without needing an admin to do it for them.
+router.patch('/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const member = await db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
+    if (!member) return res.status(404).json({ error: 'Team member not found' });
+
+    const isSelf = Number(id) === req.user.id;
+    if (!req.user.is_admin && !isSelf) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const {
+      name,
+      email,
+      password,
+      is_admin,
+      is_super_admin,
+    } = req.body || {};
+    const fields = [];
+    const values = [];
+
+    if (name !== undefined) {
+      if (!name.trim()) return res.status(400).json({ error: 'Name cannot be empty' });
+      fields.push('name = ?');
+      values.push(name.trim());
+    }
+
+    if (email !== undefined) {
+      if (!req.user.is_admin) {
+        return res.status(403).json({ error: 'Only an admin can change email addresses' });
+      }
+      if (!email.trim()) return res.status(400).json({ error: 'Email cannot be empty' });
+      const existing = await db
+        .prepare('SELECT id FROM team_members WHERE lower(email) = lower(?) AND id != ?')
+        .get(email, id);
+      if (existing) return res.status(409).json({ error: 'A team member with that email already exists' });
+      fields.push('email = ?');
+      values.push(email.trim());
+    }
+
+    if (is_admin !== undefined || is_super_admin !== undefined) {
+      if (!req.user.is_admin) {
+        return res.status(403).json({ error: 'Only an admin can change role status' });
+      }
+
+      const wantsSuperAdmin =
+        is_super_admin !== undefined
+          ? !!is_super_admin
+          : Number(member.is_super_admin) === 1;
+
+      // Only a Super Admin may promote or demote Super Admin status.
+      if (
+        is_super_admin !== undefined &&
+        wantsSuperAdmin !== (Number(member.is_super_admin) === 1) &&
+        !req.user.is_super_admin
+      ) {
+        return res.status(403).json({
+          error: 'Only a Super Admin can change Super Admin status',
+        });
+      }
+
+      // A Super Admin must always remain an Admin.
+      const nextAdmin =
+        wantsSuperAdmin
+          ? 1
+          : (is_admin !== undefined ? (is_admin ? 1 : 0) : Number(member.is_admin) === 1);
+
+      // Do not allow a logged-in Super Admin to remove their own Super Admin
+      // role accidentally.
+      if (
+        isSelf &&
+        Number(member.is_super_admin) === 1 &&
+        !wantsSuperAdmin
+      ) {
+        return res.status(400).json({
+          error: "You can't remove your own Super Admin access while logged in as it.",
+        });
+      }
+
+      // Do not allow a Super Admin to be made non-admin.
+      if (Number(member.is_super_admin) === 1 && !nextAdmin) {
+        return res.status(400).json({
+          error: 'A Super Admin must also remain an Admin',
+        });
+      }
+
+      if (is_admin !== undefined || is_super_admin !== undefined) {
+        fields.push('is_admin = ?');
+        values.push(nextAdmin);
+      }
+
+      if (is_super_admin !== undefined) {
+        fields.push('is_super_admin = ?');
+        values.push(wantsSuperAdmin ? 1 : 0);
+      }
+    }
+
+    if (password !== undefined) {
+      if (!password || password.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      }
+      fields.push('password_hash = ?');
+      values.push(hashPassword(password));
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ error: 'Nothing to update' });
+    }
+
+    values.push(id);
+    await db
+      .prepare(`UPDATE team_members SET ${fields.join(', ')}, updated_at = datetime('now') WHERE id = ?`)
+      .run(...values);
+
+    const updated = await db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
+    res.json({ member: publicUser(updated) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/roster/:id/mailbox-access - admin-only.
+// Body: { mailbox_ids: [...], full_access_mailbox_ids: [...] } (the second
+// key is optional, defaults to []). Replaces this member's mailbox
+// allow-list wholesale (empty mailbox_ids = fully unrestricted, sees every
+// mailbox - see mailbox_access table comment in db.js). Any id in
+// full_access_mailbox_ids must also be present in mailbox_ids - it's a
+// qualifier on an existing grant (full visibility within that mailbox, not
+// just tickets assigned to them - see full_access column comment in db.js),
+// not a way to grant a mailbox on its own.
+// Applies regardless of the member's own is_admin flag: an admin with
+// grants set here is scoped to those mailboxes for ticket visibility, same
+// as an agent would be, though they keep their admin-only management
+// abilities (Team/Mailboxes pages, team-wide Dashboard) either way.
+router.put('/:id/mailbox-access', requireAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const member = await db.prepare('SELECT id, is_super_admin FROM team_members WHERE id = ?').get(id);
+    if (!member) return res.status(404).json({ error: 'Team member not found' });
+
+    if (Number(member.is_super_admin) === 1 && !req.user.is_super_admin) {
+      return res.status(403).json({
+        error: 'Only a Super Admin can change another Super Admin\'s mailbox access',
+      });
+    }
+
+    const { mailbox_ids, full_access_mailbox_ids } = req.body || {};
+    if (!Array.isArray(mailbox_ids)) {
+      return res.status(400).json({ error: 'mailbox_ids must be an array (possibly empty)' });
+    }
+    const fullAccessIds = Array.isArray(full_access_mailbox_ids) ? full_access_mailbox_ids : [];
+    const mailboxIdSet = new Set(mailbox_ids.map(Number));
+    const invalidFullAccess = fullAccessIds.filter((mid) => !mailboxIdSet.has(Number(mid)));
+    if (invalidFullAccess.length) {
+      return res.status(400).json({
+        error: 'full_access_mailbox_ids can only include mailboxes already present in mailbox_ids',
+      });
+    }
+    const fullAccessSet = new Set(fullAccessIds.map(Number));
+
+    await db.prepare('DELETE FROM mailbox_access WHERE team_member_id = ?').run(id);
+    for (const mailboxId of mailbox_ids) {
+      await db
+        .prepare('INSERT INTO mailbox_access (team_member_id, mailbox_id, full_access) VALUES (?, ?, ?)')
+        .run(id, mailboxId, fullAccessSet.has(Number(mailboxId)) ? 1 : 0);
+    }
+
+    res.json({ ok: true, mailbox_ids, full_access_mailbox_ids: fullAccessIds });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (Number(id) === req.user.id) {
+      return res.status(400).json({ error: "You can't remove your own account while logged in as it." });
+    }
+    const member = await db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
+    if (!member) return res.status(404).json({ error: 'Team member not found' });
+
+    if (Number(member.is_super_admin) === 1 && !req.user.is_super_admin) {
+      return res.status(403).json({
+        error: 'Only a Super Admin can remove another Super Admin',
+      });
+    }
+
+    await db.prepare('DELETE FROM team_members WHERE id = ?').run(id);
+    // Unassign any tickets that pointed at this member.
+    await db
+      .prepare("UPDATE tickets SET assignee_id = NULL, updated_at = datetime('now') WHERE assignee_id = ?")
+      .run(id);
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = router;

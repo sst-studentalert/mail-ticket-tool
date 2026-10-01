@@ -99,6 +99,7 @@ async function migrate() {
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       is_admin INTEGER NOT NULL DEFAULT 0,
+      is_super_admin INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -115,6 +116,8 @@ async function migrate() {
       last_internal_date TEXT,
       last_sent_internal_date TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
+      is_private INTEGER NOT NULL DEFAULT 0,
+      private_owner_id INTEGER REFERENCES team_members(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -235,6 +238,39 @@ async function migrate() {
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS first_replied_at TIMESTAMPTZ;
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
     ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS last_sent_internal_date TEXT;
+    ALTER TABLE team_members ADD COLUMN IF NOT EXISTS is_super_admin INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS is_private INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS private_owner_id INTEGER REFERENCES team_members(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS idx_mailboxes_private_owner ON mailboxes(private_owner_id);
+
+    -- Only one Super Admin is allowed.
+    -- The designated Super Admin is always program_director@sst.scaler.com.
+    -- Other Admins are unaffected.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_one_super_admin
+      ON team_members (is_super_admin)
+      WHERE is_super_admin = 1;
+
+    -- If the designated account already exists, make it the sole Super Admin.
+    -- This does not create a password or a new account; the existing password
+    -- for this team member remains unchanged.
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM team_members
+        WHERE LOWER(email) = LOWER('program_director@sst.scaler.com')
+      ) THEN
+        UPDATE team_members
+        SET is_super_admin = 0
+        WHERE LOWER(email) <> LOWER('program_director@sst.scaler.com')
+          AND is_super_admin = 1;
+
+        UPDATE team_members
+        SET is_admin = 1,
+            is_super_admin = 1
+        WHERE LOWER(email) = LOWER('program_director@sst.scaler.com');
+      END IF;
+    END $$;
     ALTER TABLE mailbox_access ADD COLUMN IF NOT EXISTS full_access INTEGER NOT NULL DEFAULT 0;
     -- to_address/cc_address: the raw To/Cc header of an INBOUND message,
     -- kept so "Reply All" can prefill who else was on the original email -
